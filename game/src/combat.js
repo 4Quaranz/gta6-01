@@ -1,207 +1,174 @@
-// SUNPORT — combat and pickups.
-// Fists (F) swing at whatever is in front of Jace; the pistol (left click)
-// is a hitscan shot from the camera with a tracer line, muzzle flash and
-// limited ammo. R reloads. Pistol, ammo and health pickups sit around the
-// city as glowing boxes and respawn after a while.
+// SUNPORT v2 — combat. A punch is a timed swing: the fist lands 0.14 s
+// into the 0.45 s animation, only on targets inside range and inside the
+// swing arc. A hit staggers the target, throws them back, raises the
+// wanted level and makes nearby pedestrians flee — and tells the police
+// to hold off ramming. Shooting is hitscan from the camera with a
+// magazine and a timed reload.
+
 import * as THREE from 'three';
-import { CFG } from './config.js';
-import { addWanted } from './police.js';
-import { scarePeds } from './pedestrians.js';
+import { COMBAT, WANTED, angleDelta } from './config.js';
 
-export function createPickups(scene) {
-  const defs = [
-    { kind: 'pistol', x: 20, z: -20, color: 0xffd24a },
-    { kind: 'ammo', x: -60, z: 60, color: 0xffd24a },
-    { kind: 'ammo', x: 100, z: -60, color: 0xffd24a },
-    { kind: 'health', x: -150, z: -150, color: 0x39d353 },
-    { kind: 'health', x: 60, z: 140, color: 0x39d353 },
-  ];
-  const pickups = [];
-  for (const d of defs) {
-    const mesh = new THREE.Mesh(
-      new THREE.BoxGeometry(1.1, 1.1, 1.1),
-      new THREE.MeshBasicMaterial({ color: d.color }),
-    );
-    mesh.position.set(d.x, 0.9, d.z);
-    scene.add(mesh);
-    pickups.push({ ...d, mesh, taken: false, respawnT: 0 });
+export class Combat {
+  constructor(audio, effects) {
+    this.audio = audio;
+    this.effects = effects;
+    this.reloading = false;
+    this.reloadT = 0;
+    this.fireCooldown = 0;
   }
-  return pickups;
-}
 
-export function stepPickups(state, dt) {
-  const p = state.player;
-  for (const pk of state.pickups) {
-    if (pk.taken) {
-      pk.respawnT -= dt;
-      if (pk.respawnT <= 0) {
-        pk.taken = false;
-        pk.mesh.visible = true;
+  tryPunch(player) {
+    if (!player.startPunch()) return false;
+    this.audio.swoosh();
+    const fx = player.x + Math.sin(player.yaw) * 1.4;
+    const fz = player.z + Math.cos(player.yaw) * 1.4;
+    this.effects.swoosh({ x: fx, y: 1.3, z: fz }, player.yaw);
+    return true;
+  }
+
+  // Resolve the punch at the moment the fist lands.
+  resolvePunch(player, ctx) {
+    const px = player.x;
+    const pz = player.z;
+    const inArc = (tx, tz) => {
+      const d = Math.hypot(tx - px, tz - pz);
+      if (d > COMBAT.punchRange) return null;
+      const ang = Math.atan2(tx - px, tz - pz);
+      if (Math.abs(angleDelta(ang, player.yaw)) > COMBAT.punchArc) return null;
+      return d;
+    };
+    // Foot cops first — punching the law costs more.
+    let hitCop = null;
+    let hitCopD = Infinity;
+    for (const cop of ctx.police.cops) {
+      const d = inArc(cop.x, cop.z);
+      if (d !== null && d < hitCopD) { hitCopD = d; hitCop = cop; }
+    }
+    if (hitCop) {
+      hitCop.health -= COMBAT.punchDamage;
+      hitCop.staggerT = 0.7;
+      const dx = hitCop.x - px;
+      const dz = hitCop.z - pz;
+      const l = Math.hypot(dx, dz) || 1;
+      hitCop.x += (dx / l) * COMBAT.punchKnock * 0.35;
+      hitCop.z += (dz / l) * COMBAT.punchKnock * 0.35;
+      this.landHit(player, ctx, hitCop.x, hitCop.z, WANTED.punchCop, 'cop');
+      if (hitCop.health <= 0) {
+        ctx.police.removeCop(hitCop);
       }
-      continue;
+      return 'cop';
     }
-    pk.mesh.rotation.y += dt * 1.5;
-    pk.mesh.position.y = 0.9 + Math.sin(state.time * 2 + pk.x) * 0.15;
-    if (!p.onFoot) continue;
-    if (Math.hypot(pk.x - p.x, pk.z - p.z) < 2) {
-      pk.taken = true;
-      pk.mesh.visible = false;
-      pk.respawnT = 45;
-      if (pk.kind === 'pistol') {
-        p.hasPistol = true;
-        p.weapon = 'pistol';
-        p.mag = CFG.pistolMag;
-        p.reserve = 24;
-        state.hint = 'Picked up a pistol — click to shoot, R to reload';
-      } else if (pk.kind === 'ammo') {
-        p.reserve += 24;
-        if (!p.hasPistol) { p.hasPistol = true; p.weapon = 'pistol'; p.mag = CFG.pistolMag; }
-        state.hint = '+24 pistol ammo';
-      } else {
-        p.hp = Math.min(CFG.playerHp, p.hp + 50);
-        state.hint = '+50 health';
+    // Then pedestrians.
+    const ped = ctx.pedestrians.nearest(px, pz, COMBAT.punchRange);
+    if (ped) {
+      const d = inArc(ped.x, ped.z);
+      if (d !== null) {
+        ctx.pedestrians.knock(ped, px, pz, COMBAT.punchKnock);
+        this.landHit(player, ctx, ped.x, ped.z, WANTED.punchPed, 'ped');
+        return 'ped';
       }
-      state.audio.pickup();
-      state.fx.burst(pk.x, 1.2, pk.z, pk.color, 10, 5);
     }
+    return null;
   }
-}
 
-// Targets the pistol can hit: pedestrians, cops, police cars, traffic cars.
-function aimTargets(state) {
-  const list = [];
-  for (const ped of state.peds) if (ped.alive) list.push({ x: ped.x, z: ped.z, y: 1.2, r: 1.0, hp: 'ped', ref: ped });
-  for (const cop of state.cops) if (cop.alive) list.push({ x: cop.x, z: cop.z, y: 1.2, r: 1.0, hp: 'cop', ref: cop });
-  for (const car of [...state.traffic, ...state.policeCars]) {
-    list.push({ x: car.x, z: car.z, y: 1.0, r: 2.4, hp: 'car', ref: car });
+  landHit(player, ctx, tx, tz, heat, kind) {
+    this.audio.punch();
+    this.effects.burst({ x: tx, y: 1.2, z: tz }, 0xffd24a, 14);
+    ctx.state.wantedHeat = Math.min(100, ctx.state.wantedHeat + heat);
+    ctx.state.lastCrimeT = ctx.time;
+    ctx.police.onPunch(ctx.time);
+    ctx.pedestrians.scare(tx, tz, 16);
+    if (ctx.onShake) ctx.onShake(0.25);
+    return kind;
   }
-  return list;
-}
 
-export function playerShoot(state) {
-  const p = state.player;
-  if (p.weapon !== 'pistol' || !p.hasPistol) return false;
-  if (p.reloading) return false;
-  if (p.mag <= 0) { startReload(state); return false; }
-  p.mag -= 1;
-  state.audio.shot();
-  // Aim from the camera through the screen centre.
-  const cam = state.camera;
-  const dir = new THREE.Vector3();
-  cam.getWorldDirection(dir);
-  const origin = cam.position.clone();
-  let best = null;
-  let bestT = CFG.pistolRange;
-  for (const t of aimTargets(state)) {
-    const to = new THREE.Vector3(t.x - origin.x, t.y - origin.y, t.z - origin.z);
-    const along = to.dot(dir);
-    if (along < 1 || along > bestT) continue;
-    const perp = to.clone().addScaledVector(dir, -along).length();
-    if (perp < t.r + along * 0.02) { best = t; bestT = along; }
-  }
-  const end = origin.clone().addScaledVector(dir, best ? bestT : CFG.pistolRange);
-  state.spawnTracer(origin, end);
-  state.fx.burst(end.x, end.y, end.z, 0xffe9a8, 4, 3);
-  if (best) {
-    damageTarget(state, best, CFG.pistolDamage);
-    state.fx.burst(best.x, best.y, best.z, 0xff5544, 8, 6);
-  }
-  addWanted(state, CFG.wantedPerShot);
-  scarePeds(state.peds, p.x, p.z, 30);
-  state.fx.addShake(0.12);
-  return true;
-}
-
-export function playerPunch(state) {
-  const p = state.player;
-  state.audio.punch();
-  const fx = Math.sin(p.yaw);
-  const fz = Math.cos(p.yaw);
-  let hitAny = false;
-  for (const ped of state.peds) {
-    if (!ped.alive) continue;
-    const dx = ped.x - p.x;
-    const dz = ped.z - p.z;
-    const d = Math.hypot(dx, dz);
-    if (d < CFG.punchRange && (dx * fx + dz * fz) > 0) {
-      ped.hp -= CFG.punchDamage;
-      ped.fleeT = 4; ped.fleeX = p.x; ped.fleeZ = p.z;
-      state.fx.burst(ped.x, 1.2, ped.z, 0xffe9a8, 6, 5);
-      if (ped.hp <= 0) killPed(state, ped);
-      else addWanted(state, CFG.wantedPerHitPed / 2);
-      hitAny = true;
-    }
-  }
-  for (const cop of state.cops) {
-    if (!cop.alive) continue;
-    const dx = cop.x - p.x;
-    const dz = cop.z - p.z;
-    const d = Math.hypot(dx, dz);
-    if (d < CFG.punchRange && (dx * fx + dz * fz) > 0) {
-      cop.hp -= CFG.punchDamage;
-      if (cop.hp <= 0) {
-        cop.alive = false;
-        cop.mesh.visible = false;
-        addWanted(state, 20);
+  shoot(player, ctx) {
+    if (player.weapon !== 'pistol' || player.mag <= 0 || this.reloading) return false;
+    if (this.fireCooldown > 0) return false;
+    this.fireCooldown = 0.18;
+    player.mag -= 1;
+    this.audio.gunshot();
+    ctx.state.wantedHeat = Math.min(100, ctx.state.wantedHeat + WANTED.shoot);
+    ctx.state.lastCrimeT = ctx.time;
+    ctx.pedestrians.scare(player.x, player.z, 20);
+    // Hitscan along the camera forward.
+    const cam = ctx.camera;
+    const origin = new THREE.Vector3();
+    cam.getWorldPosition(origin);
+    const dir = new THREE.Vector3();
+    cam.getWorldDirection(dir);
+    const muzzle = new THREE.Vector3(player.x, 1.4, player.z).add(new THREE.Vector3(Math.sin(player.yaw), 0, Math.cos(player.yaw)).multiplyScalar(0.8));
+    this.effects.flash({ x: muzzle.x, y: muzzle.y, z: muzzle.z }, 1.6);
+    let best = null;
+    let bestD = COMBAT.pistolRange;
+    const test = (tx, tz, ty, radius, ref) => {
+      const to = new THREE.Vector3(tx - origin.x, ty - origin.y, tz - origin.z);
+      const d = to.length();
+      if (d > bestD) return;
+      to.normalize();
+      const dot = to.dot(dir);
+      if (dot > 0.998) { bestD = d; best = ref; }
+    };
+    for (const ped of ctx.pedestrians.list) test(ped.x, ped.z, 1.2, 0.8, { kind: 'ped', ref: ped });
+    for (const cop of ctx.police.cops) test(cop.x, cop.z, 1.2, 0.8, { kind: 'cop', ref: cop });
+    for (const car of ctx.police.cars) test(car.x, car.z, 1.0, 2.0, { kind: 'car', ref: car });
+    if (best) {
+      const tx = best.ref.x;
+      const tz = best.ref.z;
+      this.effects.burst({ x: tx, y: 1.2, z: tz }, 0xff5544, 18);
+      if (best.kind === 'ped') ctx.pedestrians.knock(best.ref, player.x, player.z, 8);
+      if (best.kind === 'cop') {
+        best.ref.health -= COMBAT.pistolDamage;
+        best.ref.staggerT = 0.8;
+        if (best.ref.health <= 0) ctx.police.removeCop(best.ref);
       }
-      hitAny = true;
-    }
-  }
-  if (hitAny) state.fx.addShake(0.1);
-  return hitAny;
-}
-
-function damageTarget(state, t, dmg) {
-  if (t.hp === 'ped') {
-    t.ref.hp -= dmg;
-    t.ref.fleeT = 4; t.ref.fleeX = state.player.x; t.ref.fleeZ = state.player.z;
-    if (t.ref.hp <= 0) killPed(state, t.ref);
-    else addWanted(state, CFG.wantedPerHitPed / 2);
-  } else if (t.hp === 'cop') {
-    t.ref.hp -= dmg;
-    if (t.ref.hp <= 0) {
-      t.ref.alive = false;
-      t.ref.mesh.visible = false;
-      addWanted(state, 25);
+      if (best.kind === 'car') ctx.state.wantedHeat = Math.min(100, ctx.state.wantedHeat + 6);
     } else {
-      addWanted(state, 15);
+      // Tracer into the distance: a short-lived spark where the ray ends.
+      const end = origin.clone().add(dir.clone().multiplyScalar(40));
+      this.effects.burst({ x: end.x, y: Math.max(0.5, end.y), z: end.z }, 0xffd24a, 6);
     }
-  } else if (t.hp === 'car') {
-    t.ref.hp -= dmg;
-    if (t.ref.hp <= 0 && !t.ref.dead) {
-      t.ref.dead = true;
-      state.fx.burst(t.ref.x, 1.5, t.ref.z, 0xff8844, 24, 9);
-      state.fx.addShake(0.4);
-      state.audio.crash();
-      addWanted(state, 15);
+    if (ctx.onShake) ctx.onShake(0.12);
+    return true;
+  }
+
+  startReload(player) {
+    if (player.weapon !== 'pistol' || this.reloading) return false;
+    if (player.mag >= COMBAT.magSize || player.reserve <= 0) return false;
+    this.reloading = true;
+    this.reloadT = 1.2;
+    this.audio.reload();
+    return true;
+  }
+
+  update(dt, player) {
+    if (this.fireCooldown > 0) this.fireCooldown -= dt;
+    if (this.reloading) {
+      this.reloadT -= dt;
+      if (this.reloadT <= 0) {
+        const need = COMBAT.magSize - player.mag;
+        const take = Math.min(need, player.reserve);
+        player.mag += take;
+        player.reserve -= take;
+        this.reloading = false;
+      }
+    }
+    // Resolve the punch at the fist-landing moment (0.14 s in).
+    if (player.punchT > 0 && !player.punchDidHit) {
+      if (player.punchT <= 0.45 - COMBAT.punchHitAt) {
+        player.punchDidHit = true;
+        this._pendingResolve = player;
+      }
     }
   }
-}
 
-function killPed(state, ped) {
-  ped.alive = false;
-  ped.mesh.visible = false;
-  addWanted(state, CFG.wantedPerHitPed);
-  state.fx.burst(ped.x, 1.2, ped.z, 0xff5544, 12, 6);
-}
-
-export function startReload(state) {
-  const p = state.player;
-  if (p.reloading || p.mag >= CFG.pistolMag || p.reserve <= 0) return;
-  p.reloading = true;
-  p.reloadT = CFG.reloadTime;
-  state.audio.reload();
-}
-
-export function updateReload(state, dt) {
-  const p = state.player;
-  if (!p.reloading) return;
-  p.reloadT -= dt;
-  if (p.reloadT <= 0) {
-    const need = CFG.pistolMag - p.mag;
-    const take = Math.min(need, p.reserve);
-    p.mag += take;
-    p.reserve -= take;
-    p.reloading = false;
+  // Called by main each frame after update(): resolves a punch that
+  // landed this frame, with the full context available.
+  resolvePending(ctx) {
+    if (this._pendingResolve) {
+      const p = this._pendingResolve;
+      this._pendingResolve = null;
+      this.resolvePunch(p, ctx);
+    }
   }
 }

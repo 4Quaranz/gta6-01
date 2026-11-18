@@ -1,110 +1,95 @@
-// SUNPORT — screenshot staging for ?shot=.
-// With a shot query the start screen is skipped and the world is staged
-// deterministically (seed 1): start shows the title over the city at
-// golden hour, street shows Jace on foot on Palmera Boulevard by Solmar
-// Beach at midday, drive puts him in a convertible on the Neon Strip at
-// night, chase stages a 3-star police pursuit downtown at dusk.
-import { startMission } from './missions.js';
-import { createCar, syncCarMesh } from './vehicles.js';
+// SUNPORT v2 — ?shot= scenes for the four screenshots. Each one sets up
+// a fixed, deterministic view (seeded RNG), then main renders one frame
+// and raises window.__shotReady.
 
-export function stageShot(state, shot) {
-  const p = state.player;
-  state.phase = 'play';
-  state.input.shotMode = true;
-  document.getElementById('menu').hidden = true;
-  document.getElementById('hud').hidden = false;
+import { GARAGE } from './config.js';
+
+// Repaint a car's body a bright colour so it reads in a screenshot.
+function repaint(car, colorHex) {
+  const paintMat = car.mesh.userData.paintMat;
+  if (paintMat) { paintMat.color.setHex(colorHex); return; }
+  car.mesh.traverse((o) => {
+    if (o.isMesh && o.material && o.material.metalness === 0.3) o.material.color.setHex(colorHex);
+  });
+}
+
+export function applyShot(shot, seed, ctx) {
+  const { state, player, vehicles, police, daynight, hud, missions } = ctx;
+  // Deterministic-ish setup; the RNG is already seeded by main.
+  void seed;
   if (shot === 'start') {
+    // Title screen: golden hour over Palmera Boulevard, Jace on foot.
+    daynight.setTime(0.42);
+    player.reset(190, 32, -Math.PI / 2);
+    player.camYaw = -Math.PI / 2;
     state.phase = 'menu';
-    document.getElementById('menu').hidden = false;
-    document.getElementById('hud').hidden = true;
-    state.daynight.setHours(17.6); // golden hour over Palmera Boulevard
-    // Menu camera orbits the city; the player stands on a downtown corner.
-    p.x = 0; p.z = 0;
-    p.camYaw = Math.PI * 0.75;
-    state.menuOrbit = true;
-  } else if (shot === 'street') {
-    startMission(state, 0);
-    state.daynight.setHours(13); // bright midday on the beach
-    // Jace on foot on the boulevard sidewalk, camera south-west looking
-    // north-east: sand + turquoise sea ahead, road + traffic to the left,
-    // palms and crowd on the sidewalk. (z=-30 keeps the lamp poles at
-    // z=8 and z=-72 out of the view axis.)
-    p.x = 169; p.z = -30;
-    p.yaw = Math.PI * 0.75;
-    p.camYaw = -Math.PI / 4;
-    p.camPitch = 0.3;
-    p.hasPistol = true; p.weapon = 'pistol'; p.mag = 12; p.reserve = 24;
-    crowdNear(state, 168, -30, 10);
-    carsNear(state);
-  } else if (shot === 'drive') {
-    startMission(state, 0);
-    state.daynight.setHours(22); // neon night on the Strip
-    const car = state.parked.find((c) => c.type === 'convertible') || state.parked[0];
-    enterCarForShot(state, car);
+    hud.setObjective('Curi mobil apa saja');
+    return;
+  }
+  if (shot === 'street') {
+    // Midday on the boulevard: Jace walking south along the beach-side
+    // sidewalk — hotels on the right, road and sea on the left, palms
+    // framing the view, pedestrians and traffic around.
+    daynight.setTime(0.22);
+    player.reset(193.5, 55, 0);
+    player.camYaw = Math.PI;
+    state.phase = 'play';
+    missions.startMission(0);
+    return;
+  }
+  if (shot === 'drive') {
+    // Golden hour: Jace driving a convertible down Palmera Boulevard.
+    daynight.setTime(0.45);
+    const car = vehicles.parked.find((c) => c.type === 'convertible') || vehicles.parked[0];
+    player.reset(176, 44, Math.PI / 2);
+    player.enterCar(car);
+    car.x = 176;
+    car.z = 44;
+    car.yaw = Math.PI / 2; // east, down the boulevard toward the sea
+    car.speed = 22;
+    car.isParked = false;
+    repaint(car, 0xd83a2e); // bright red, so the car pops against sand and sea
+    player.camYaw = -Math.PI / 2; // camera behind the car, looking east
+    state.phase = 'play';
+    state.wantedHeat = 10;
+    missions.startMission(0);
+    missions.step = 1;
+    missions.target = { x: GARAGE.x, z: GARAGE.z };
+    return;
+  }
+  if (shot === 'chase') {
+    // Dusk on the bridge to Cayo Verde: 4 stars, a police roadblock ahead
+    // on the bridge, the helicopter overhead, the lighthouse beam.
+    // 0.46 is late golden hour / early dusk: the sun is still up enough
+    // for the cars to read, while the sky is already pink-purple.
+    daynight.setTime(0.46);
+    const car = vehicles.parked.find((c) => c.type === 'muscle') || vehicles.parked[0];
+    player.reset(260, 0, Math.PI / 2);
+    player.enterCar(car);
+    car.x = 260;
+    car.z = 0;
+    car.yaw = Math.PI / 2; // east, across the bridge toward the island
     car.speed = 26;
-    car.heading = Math.PI / 2; // east along the Neon Strip (z=120)
-    car.x = -40; car.z = 120;
-    p.x = car.x; p.z = car.z;
-    syncCarMesh(car, 0);
-    crowdNear(state, -20, 120, 8);
-  } else if (shot === 'chase') {
-    startMission(state, 2);
-    state.daynight.setHours(19); // dusk downtown
-    const car = state.parked[0];
-    enterCarForShot(state, car);
-    car.speed = 28;
-    car.heading = 0;
-    car.x = 0; car.z = 20;
-    p.x = car.x; p.z = car.z;
-    syncCarMesh(car, 0);
-    state.wantedHeat = 55; // exactly 3 stars (no helicopter yet)
-    // A police interceptor ahead in the next lane, lights on, pacing the
-    // player (shot mode: it cruises straight, no ramming).
-    const cop = createCar(-6, 45, 0, 0x111111, 'police');
-    cop.speed = 26;
-    state.scene.add(cop.mesh);
-    state.policeCars.push(cop);
-    syncCarMesh(cop, 0);
-    state.banner = { title: 'Mission 3 — Getaway', sub: 'Escape the police — reach the Safehouse with 3 stars' };
-    state.bannerT = 60;
+    car.isParked = false;
+    repaint(car, 0xf2c200); // bright yellow, so the car reads at dusk
+    player.camYaw = -Math.PI / 2; // camera behind, looking east along the bridge
+    state.phase = 'play';
+    state.wantedHeat = 85; // 4 stars, so the helicopter stays up
+    // Roadblock on the island, ahead of where the player will be when the
+    // screenshot is taken (player drives east ~39 m during the settle).
+    // Both start at speed 0 so they are still ~10 m ahead, in frame, with
+    // their light bars flashing, instead of falling behind the camera.
+    const pc1 = police.spawnCar(322, -3, 0);
+    pc1.x = 322; pc1.z = -3; pc1.yaw = -Math.PI / 2; pc1.speed = 0; pc1.mode = 'APPROACH';
+    const pc2 = police.spawnCar(318, 3, 0);
+    pc2.x = 318; pc2.z = 3; pc2.yaw = -Math.PI / 2; pc2.speed = 0; pc2.mode = 'APPROACH';
+    police.spawnHeli(260, 0);
+    missions.startMission(2);
+    missions.step = 1;
+    missions.target = { x: -120, z: 160 };
+    hud.setObjective('Kabur dari kejaran polisi');
+    return;
   }
-  state.shotReadyAt = state.time + 0.5;
-}
-
-// Pull two traffic cars onto the boulevard so the street shot shows
-// traffic as well as the crowd.
-function carsNear(state) {
-  const t = state.traffic;
-  if (t[0]) {
-    t[0].x = 157; t[0].z = -50; t[0].heading = 0; t[0].speed = 10;
-    t[0].ai = { alongZ: true, street: 160, lane: -3, dir: 1, speed: 10 };
-    syncCarMesh(t[0], 0);
-  }
-  if (t[1]) {
-    t[1].x = 163; t[1].z = -75; t[1].heading = Math.PI; t[1].speed = 10;
-    t[1].ai = { alongZ: true, street: 160, lane: 3, dir: -1, speed: 10 };
-    syncCarMesh(t[1], 0);
-  }
-}
-
-// Pull a few pedestrians near (x, z) so the shot reads crowded.
-function crowdNear(state, x, z, n) {
-  let placed = 0;
-  for (const ped of state.peds) {
-    if (placed >= n) break;
-    if (ped.sitting) continue;
-    ped.x = x + (placed % 4) * 4 - 6;
-    ped.z = z + Math.floor(placed / 4) * 8 - 8;
-    ped.mesh.position.set(ped.x, 0, ped.z);
-    placed += 1;
-  }
-}
-
-function enterCarForShot(state, car) {
-  const p = state.player;
-  car.kind = 'player';
-  p.onFoot = false;
-  p.car = car;
-  p.mesh.visible = false;
-  state.parked = state.parked.filter((c) => c !== car);
+  // Unknown shot: just play.
+  state.phase = 'play';
 }

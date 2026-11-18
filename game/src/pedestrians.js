@@ -1,177 +1,224 @@
-// SUNPORT — pedestrians.
-// Sunny-sidewalk walkers in bright shirts, now varied: skin tones, hair
-// colours, caps and hats, some jogging, some strolling the beach, a few
-// sitting under umbrellas. They stroll the sidewalks, and when a shot
-// rings out, a punch lands or a car bears down on them nearby, they run
-// away screaming (well, fleeing) for a few seconds.
+// SUNPORT v2 — pedestrians who actually walk. Walkers patrol the sidewalk
+// loop around their block with a real walk cycle (arms and legs swinging),
+// joggers run the beach path, sitters relax on the sand, and everyone
+// flees when a punch lands or a gun goes off nearby.
+
 import * as THREE from 'three';
-import { CFG } from './config.js';
+import { ROADS_X, ROADS_Z, ROAD_W, SIDEWALK_W, SPEEDS, WORLD } from './config.js';
+import { buildAvatar, poseWalk } from './player.js';
 
-const SHIRTS = [0xff6b6b, 0x4ecdc4, 0xffe66d, 0x95e1d3, 0xf38181, 0xaa96da, 0xfcbad3, 0xff9f43, 0x2ed573, 0x70a1ff];
-const SKINS = [0xd9a077, 0xc98e6b, 0x8a5a3b, 0xf0c8a0, 0x6b4423, 0xe8b88a];
-const HAIRS = [0x222222, 0x5a3a1a, 0xd8d8d8, 0x8a5a2a, 0xffd24a, 0x2a4a8a];
-const PANTS = [0x333a45, 0x2a3242, 0x5a4a6a, 0x8a7a5a, 0x3a5a7a, 0xe8e8e8];
+const SKINS = [0xc98e6a, 0x8a5a3b, 0xe8b88a, 0x6a4a2f, 0xd8a070];
+const SHIRTS = [0xd84a4a, 0x4a8ad8, 0x4ad88a, 0xe8d84a, 0x9a4ad8, 0xf2f2f2, 0x2a2a2a, 0xff8a3a];
+const PANTS = [0x2a2f38, 0x4a3a2a, 0x3a4a5a, 0x6a6a6a];
+const HAIRS = [0x1a1a1a, 0x4a2a1a, 0x8a8a8a, 0xd8b25a, 0x6a3a1a];
 
-export function createPedMesh(color, rng) {
-  const g = new THREE.Group();
-  const shirt = new THREE.MeshLambertMaterial({ color });
-  const pants = new THREE.MeshLambertMaterial({ color: rng ? rng.pick(PANTS) : 0x333a45 });
-  const skin = new THREE.MeshLambertMaterial({ color: rng ? rng.pick(SKINS) : 0xd9a077 });
-  const torso = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.85, 0.4), shirt);
-  torso.position.y = 1.15;
-  const head = new THREE.Mesh(new THREE.SphereGeometry(0.26, 10, 8), skin);
-  head.position.y = 1.85;
-  const legL = new THREE.Mesh(new THREE.BoxGeometry(0.26, 0.7, 0.32), pants);
-  legL.position.set(-0.17, 0.35, 0);
-  const legR = legL.clone();
-  legR.position.x = 0.17;
-  const armL = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.7, 0.28), shirt);
-  armL.position.set(-0.48, 1.15, 0);
-  const armR = armL.clone();
-  armR.position.x = 0.48;
-  g.add(torso, head, legL, legR, armL, armR);
-  g.userData.legs = [legL, legR];
-  g.userData.arms = [armL, armR];
-  if (rng) {
-    const roll = rng.next();
-    if (roll < 0.35) {
-      // Cap.
-      const cap = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.28, 0.28, 0.1, 10),
-        new THREE.MeshLambertMaterial({ color: rng.pick(SHIRTS) }),
-      );
-      cap.position.y = 2.06;
-      g.add(cap);
-    } else if (roll < 0.6) {
-      // Hair.
-      const hair = new THREE.Mesh(
-        new THREE.SphereGeometry(0.27, 10, 8, 0, Math.PI * 2, 0, Math.PI / 2),
-        new THREE.MeshLambertMaterial({ color: rng.pick(HAIRS) }),
-      );
-      hair.position.y = 1.88;
-      g.add(hair);
-    } else if (roll < 0.7) {
-      // Sun hat.
+export class Pedestrians {
+  constructor(scene, rng, city) {
+    this.scene = scene;
+    this.rng = rng;
+    this.city = city;
+    this.list = [];
+    this.danger = null; // {x, z, until} — set by combat, makes peds flee
+    // 36 walkers on sidewalk loops around blocks.
+    for (let i = 0; i < 36; i++) this.spawnWalker(rng);
+    // 10 beachgoers: some strolling the sand, some sitting under umbrellas.
+    for (let i = 0; i < 10; i++) this.spawnBeach(rng);
+  }
+
+  // The sidewalk loop around block (i, j): a rectangle hugging the
+  // sidewalk centre, 7.75 m out from each road centre line.
+  blockLoop(i, j) {
+    const o = ROAD_W / 2 + SIDEWALK_W / 2 + 0.25;
+    const x0 = ROADS_X[i] + o;
+    const x1 = ROADS_X[i + 1] - o;
+    const z0 = ROADS_Z[j] + o;
+    const z1 = ROADS_Z[j + 1] - o;
+    return [
+      { x: x0, z: z0 }, { x: x1, z: z0 }, { x: x1, z: z1 }, { x: x0, z: z1 },
+    ];
+  }
+
+  makeFigure() {
+    const rng = this.rng;
+    // A different face for every pedestrian: smile, narrow eyes, glasses,
+    // mustache, sleepy — and one in ten wears sunglasses.
+    const faces = [0, 1, 2, 3, 5, 7];
+    const face = rng.next() < 0.1 ? 4 : rng.pick(faces);
+    const fig = buildAvatar({
+      skin: rng.pick(SKINS),
+      shirt: rng.pick(SHIRTS),
+      pants: rng.pick(PANTS),
+      hair: rng.pick(HAIRS),
+      face,
+    });
+    // One in three wears a hat.
+    if (rng.next() < 0.33) {
       const hat = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.42, 0.42, 0.06, 10),
-        new THREE.MeshLambertMaterial({ color: 0xf2e6c9 }),
+        new THREE.BoxGeometry(0.42, 0.1, 0.42),
+        new THREE.MeshStandardMaterial({ color: rng.pick([0xffd24a, 0xf2f2f2, 0x3a6a8a]), roughness: 0.8 }),
       );
-      hat.position.y = 2.04;
-      g.add(hat);
+      hat.position.set(0, 0.36, 0);
+      fig.head.add(hat);
     }
+    return fig;
   }
-  return g;
-}
 
-export function spawnPedestrians(scene, rng) {
-  const peds = [];
-  for (let i = 0; i < CFG.pedCount; i += 1) {
-    const alongZ = rng.next() < 0.5;
-    const street = rng.pick(CFG.streets);
-    const side = rng.pick([-9, 9]);
-    const pos = rng.range(-170, 170);
-    const jogging = rng.next() < 0.18;
-    const ped = {
-      x: alongZ ? street + side : pos,
-      z: alongZ ? pos : street + side,
-      heading: rng.range(0, Math.PI * 2),
-      alongZ, street, side,
-      dir: rng.pick([-1, 1]),
-      speed: jogging ? 3.4 : CFG.pedWalkSpeed,
-      jogging,
-      sitting: false,
-      fleeT: 0, fleeX: 0, fleeZ: 0,
-      hp: 50, alive: true, phase: rng.range(0, 6),
-      mesh: createPedMesh(rng.pick(SHIRTS), rng),
-    };
-    ped.mesh.position.set(ped.x, 0, ped.z);
-    scene.add(ped.mesh);
-    peds.push(ped);
+  spawnWalker(rng) {
+    const i = rng.int(0, ROADS_X.length - 2);
+    const j = rng.int(0, ROADS_Z.length - 2);
+    const loop = this.blockLoop(i, j);
+    const corner = rng.int(0, 3);
+    const p = loop[corner];
+    const jog = rng.next() < 0.18;
+    const fig = this.makeFigure();
+    const scale = 0.94 + rng.next() * 0.12;
+    fig.group.scale.setScalar(scale);
+    this.scene.add(fig.group);
+    this.list.push({
+      fig, x: p.x, z: p.z, yaw: 0,
+      mode: jog ? 'jog' : 'walk',
+      speed: jog ? SPEEDS.pedJog : SPEEDS.pedWalk * rng.range(0.8, 1.25),
+      loop, corner, dir: rng.next() < 0.5 ? 1 : -1,
+      phase: rng.next() * 6.28,
+      scaredT: 0, fleeX: 0, fleeZ: 0,
+    });
   }
-  // Beach crowd on Solmar Beach: strollers along the sand and sitters
-  // under the umbrellas.
-  for (let i = 0; i < CFG.beachPedCount; i += 1) {
-    const sitting = i % 3 === 0;
-    const ped = {
-      x: CFG.beachX + rng.range(8, 34),
-      z: rng.range(-160, 160),
-      heading: rng.range(0, Math.PI * 2),
-      alongZ: true, street: CFG.beachX + 20, side: 0,
-      dir: rng.pick([-1, 1]),
-      speed: sitting ? 0 : 1.2,
-      jogging: false,
-      sitting,
-      fleeT: 0, fleeX: 0, fleeZ: 0,
-      hp: 50, alive: true, phase: rng.range(0, 6),
-      mesh: createPedMesh(rng.pick(SHIRTS), rng),
-    };
-    if (sitting) {
-      ped.mesh.position.set(ped.x, -0.25, ped.z);
-      ped.mesh.rotation.x = 0.35;
-    } else {
-      ped.mesh.position.set(ped.x, 0, ped.z);
-    }
-    scene.add(ped.mesh);
-    peds.push(ped);
-  }
-  return peds;
-}
 
-// A scare at (x, z): everyone within 25 m runs away from it.
-export function scarePeds(peds, x, z, radius = 25) {
-  for (const p of peds) {
-    if (!p.alive) continue;
-    const d = Math.hypot(p.x - x, p.z - z);
-    if (d < radius) {
-      p.fleeT = 3 + Math.random() * 2;
-      p.fleeX = x; p.fleeZ = z;
-    }
+  spawnBeach(rng) {
+    const fig = this.makeFigure();
+    const scale = 0.94 + rng.next() * 0.12;
+    fig.group.scale.setScalar(scale);
+    this.scene.add(fig.group);
+    const sit = rng.next() < 0.5;
+    this.list.push({
+      fig,
+      x: rng.range(200, 222),
+      z: rng.range(-120, 160),
+      yaw: rng.range(0, Math.PI * 2),
+      mode: sit ? 'sit' : 'walk',
+      speed: SPEEDS.pedWalk * 0.9,
+      loop: null, corner: 0, dir: 1,
+      phase: rng.next() * 6.28,
+      scaredT: 0, fleeX: 0, fleeZ: 0,
+      strollDir: rng.next() < 0.5 ? 1 : -1,
+    });
   }
-}
 
-export function stepPedestrians(peds, dt, city, player) {
-  for (const p of peds) {
-    if (!p.alive) continue;
-    let vx = 0; let vz = 0;
-    if (p.fleeT > 0) {
-      p.fleeT -= dt;
-      const dx = p.x - p.fleeX;
-      const dz = p.z - p.fleeZ;
-      const d = Math.hypot(dx, dz) || 1;
-      vx = (dx / d) * CFG.pedFleeSpeed;
-      vz = (dz / d) * CFG.pedFleeSpeed;
-    } else if (!p.sitting) {
-      // Stroll along the sidewalk (or the sand); reverse at the map edge.
-      if (p.alongZ) {
-        vz = p.dir * p.speed;
-        if (p.z > 172 || p.z < -172) p.dir *= -1;
-      } else {
-        vx = p.dir * p.speed;
-        if (p.x > 172 || p.x < -172) p.dir *= -1;
+  scare(x, z, radius) {
+    this.danger = { x, z, radius, until: 0 };
+    for (const p of this.list) {
+      const d = Math.hypot(p.x - x, p.z - z);
+      if (d < radius) {
+        p.scaredT = 3;
+        p.mode = 'flee';
+        p.fleeX = p.x - x;
+        p.fleeZ = p.z - z;
+        const l = Math.hypot(p.fleeX, p.fleeZ) || 1;
+        p.fleeX /= l;
+        p.fleeZ /= l;
       }
     }
-    // A car close behind also scares them off the road.
-    if (player.car) {
-      const d = Math.hypot(p.x - player.car.x, p.z - player.car.z);
-      if (d < 6 && p.fleeT <= 0) { p.fleeT = 2; p.fleeX = player.car.x; p.fleeZ = player.car.z; }
+  }
+
+  nearest(x, z, r) {
+    let best = null;
+    let bd = r;
+    for (const p of this.list) {
+      if (p.mode === 'sit') continue;
+      const d = Math.hypot(p.x - x, p.z - z);
+      if (d < bd) { bd = d; best = p; }
     }
-    p.x += vx * dt;
-    p.z += vz * dt;
-    if (!p.sitting) city.collideCircle(p, 0.5);
-    const moving = Math.hypot(vx, vz);
-    if (moving > 0.1) {
-      p.heading = Math.atan2(vx, vz);
-      p.phase += dt * moving * (p.jogging ? 2.4 : 1.8);
-    }
-    p.mesh.position.set(p.x, p.sitting ? -0.25 : 0, p.z);
-    p.mesh.rotation.y = p.heading;
-    if (p.sitting) p.mesh.rotation.x = 0.35;
-    const swing = moving > 0.1 ? Math.sin(p.phase) * (p.jogging ? 0.7 : 0.5) : 0;
-    p.mesh.userData.legs[0].rotation.x = swing;
-    p.mesh.userData.legs[1].rotation.x = -swing;
-    if (p.mesh.userData.arms) {
-      p.mesh.userData.arms[0].rotation.x = -swing * 0.8;
-      p.mesh.userData.arms[1].rotation.x = swing * 0.8;
+    return best;
+  }
+
+  // Knock a pedestrian down: they stagger back and stay down briefly.
+  knock(p, fromX, fromZ, power) {
+    const dx = p.x - fromX;
+    const dz = p.z - fromZ;
+    const l = Math.hypot(dx, dz) || 1;
+    p.x += (dx / l) * power * 0.4;
+    p.z += (dz / l) * power * 0.4;
+    p.staggerT = 0.7;
+    p.scaredT = 3;
+    p.mode = 'flee';
+    p.fleeX = dx / l;
+    p.fleeZ = dz / l;
+  }
+
+  update(dt, ctx) {
+    for (const p of this.list) {
+      if (p.staggerT > 0) p.staggerT = Math.max(0, p.staggerT - dt);
+      if (p.scaredT > 0) p.scaredT = Math.max(0, p.scaredT - dt);
+      const f = p.fig;
+      if (p.mode === 'sit') {
+        // Seated on the sand: knees up, slight breathing, looks around.
+        f.legL.rotation.x = -1.35;
+        f.legR.rotation.x = -1.35;
+        f.armL.rotation.x = -0.5;
+        f.armR.rotation.x = -0.5;
+        f.torso.rotation.x = 0.18;
+        f.torso.position.y = 0.95;
+        f.head.rotation.y = Math.sin(ctx.time * 0.4 + p.phase) * 0.5;
+        // A sitter stands up now and then and strolls off.
+        if (Math.random() < dt * 0.02) p.mode = 'walk';
+        f.group.position.set(p.x, 0, p.z);
+        f.group.rotation.y = p.yaw;
+        continue;
+      }
+      if (p.mode === 'flee') {
+        p.x += p.fleeX * SPEEDS.pedFlee * dt;
+        p.z += p.fleeZ * SPEEDS.pedFlee * dt;
+        p.yaw = Math.atan2(p.fleeX, p.fleeZ);
+        p.phase += dt * SPEEDS.pedFlee * 2.4;
+        poseWalk(f, p.phase, 0.95, 0.16);
+        if (p.scaredT <= 0) {
+          p.mode = 'walk';
+          // Pick up a fresh loop near where they ended up.
+          const i = Math.max(0, Math.min(ROADS_X.length - 2, Math.floor((p.x + 160) / 40)));
+          const j = Math.max(0, Math.min(ROADS_Z.length - 2, Math.floor((p.z + 160) / 40)));
+          p.loop = this.blockLoop(i, j);
+          p.corner = 0;
+        }
+        // Keep them on land.
+        p.x = Math.max(-225, Math.min(224, p.x));
+        p.z = Math.max(-225, Math.min(245, p.z));
+        f.group.position.set(p.x, 0, p.z);
+        f.group.rotation.y = p.yaw;
+        continue;
+      }
+      // Walk / jog along the loop, or stroll the beach.
+      let tx;
+      let tz;
+      if (p.loop) {
+        const next = p.loop[(p.corner + p.dir + 4) % 4];
+        tx = next.x;
+        tz = next.z;
+        const dx = tx - p.x;
+        const dz = tz - p.z;
+        const d = Math.hypot(dx, dz);
+        if (d < 0.6) {
+          p.corner = (p.corner + p.dir + 4) % 4;
+        } else {
+          const step = Math.min(d, p.speed * dt);
+          p.x += (dx / d) * step;
+          p.z += (dz / d) * step;
+          p.yaw = Math.atan2(dx, dz);
+        }
+      } else {
+        // Beach stroll: along the sand, turn at the ends.
+        p.z += p.strollDir * p.speed * dt;
+        if (p.z > 170) p.strollDir = -1;
+        if (p.z < -130) p.strollDir = 1;
+        p.yaw = p.strollDir > 0 ? 0 : Math.PI;
+        tx = p.x;
+        tz = p.z;
+      }
+      const running = p.mode === 'jog';
+      p.phase += dt * p.speed * 2.1;
+      poseWalk(f, p.phase, running ? 0.95 : 0.6, running ? 0.15 : 0.04);
+      if (p.staggerT > 0) f.torso.rotation.x -= 0.3 * (p.staggerT / 0.7);
+      f.group.position.set(p.x, 0, p.z);
+      f.group.rotation.y = p.yaw;
     }
   }
 }

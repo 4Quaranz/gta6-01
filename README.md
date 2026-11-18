@@ -1,19 +1,83 @@
-# gta6-01
+# SUNPORT — Kota Pantai, Satu Malam, Empat Misi
 
-[![make.fun · gta6-01](https://make.fun/badge/gta6-01.svg)](https://make.fun/bounty/gta6-01?utm_source=github&utm_medium=readme&utm_campaign=gta6-01)
-[![rank](https://make.fun/badge/gta6-01/4Quaranz/gta6-01/rank.svg)](https://make.fun/bounty/gta6-01/leaderboard?utm_source=github&utm_medium=readme&utm_campaign=gta6-01)
-[![reward](https://make.fun/badge/gta6-01/4Quaranz/gta6-01/reward.svg)](https://make.fun/bounty/gta6-01?utm_source=github&utm_medium=readme&utm_campaign=gta6-01)
+[![gta6-01](https://make.fun/badge/gta6-01.svg)](https://make.fun/competitions/gta6-01)
+[![rank](https://make.fun/badge/gta6-01/4Quaranz/gta6-01/rank.svg)](https://make.fun/competitions/gta6-01)
+[![reward](https://make.fun/badge/gta6-01/4Quaranz/gta6-01/reward.svg)](https://make.fun/competitions/gta6-01)
 
-**SUNPORT** — an open-world crime game in the browser. Explore a sunny coastal city on foot and by car, steal rides, dodge the Sunport PD's wanted stars, and run four story missions in "Sunport Nights", from a boosted car to the Big One at Sunport First Bank.
+> Referral: `scveefga`
 
-A full day/night cycle: golden hour over Palmera Boulevard's pastel art-deco hotels, turquoise Solmar Beach with its marina and yachts, and the Neon Strip glowing pink and cyan after dark. Six car types with glossy paint, a 0–5 star wanted system with police cars, foot cops and a searchlight helicopter at 4 stars, crowded sidewalks and beaches, and a GTA-style HUD with minimap, district names and Jace & Lena's story dialogue.
+**SUNPORT** adalah game open-world 3D bergaya GTA 6 — orisinal sepenuhnya
+(bukan Vice City, bukan Rockstar): kota pantai fiktif dengan boulevard hotel
+Art Deco pastel, laut turquoise, Neon Strip, Downtown, Rustport, dan pulau
+Cayo Verde di seberang jembatan. Jace Moreno dan Lena Cruz menjalani empat
+misi "Sunport Nights": curi mobil, jemput Lena, buat wanted 2 bintang, lalu
+rampok Bank Sunport dan kabur ke pulau.
 
-## Run it
+## Cara main
 
-```sh
-node serve.ts
+Buka `game/index.html` di browser (atau `node serve.ts` lalu buka
+http://localhost:8080). Tanpa network, tanpa instalasi — semua aset dibuat
+dari kode (three.js di-vendor di `game/vendor/`).
+
+- **Keyboard:** WASD jalan · Shift lari · E masuk/keluar mobil · F pukul ·
+  klik tembak · R reload · 1/2 ganti senjata (tinju/pistol) · P jeda · M bisu
+- **HP (sentuh):** joystick kiri untuk jalan/mengemudi · tombol kanan: MASUK
+  MOBIL, PUKUL, TEMBAK, RELOAD, INTERAKSI, LARI · drag layar kanan untuk
+  kamera · tombol II untuk jeda
+
+## Yang ada di game
+
+- **Kota yang rapi dan hidup:** grid jalan yang jelas, blok kota teratur,
+  tiap distrik terasa beda — menara kaca Downtown, hotel pastel Palmera
+  Boulevard (balkon, kanopi, neon), klub Neon Strip, gudang Rustport
+  (silo, kontainer, dermaga). Gedung punya atap berundak, AC, antena,
+  papan reklame 3D, gapura SUNPORT, monumen, halte, kios, dan lampu jalan.
+- **Dunia bergerak:** pejalan kaki benar-benar berjalan di trotoar (ayun
+  lengan/kaki, ada yang jogging, duduk di pantai, lari ketakutan saat ada
+  keributan), lalu lintas mengalir dan berbelok di persimpangan, awan
+  melintasi langit, palem bergoyang, laut bergerak, yacht mengapung,
+  pesawat lewat, neon berkedip di malam hari.
+- **Animasi pukul:** ayunan lengan penuh + badan membungkuk/maju + garis
+  gerak + musuh terhuyung. Polisi tidak langsung menabrak setelah pukulan —
+  mereka mendekat, melambat, mengitari dari jarak aman, dan baru boleh
+  menabrak setelah jeda beberapa detik (atau saat wanted sudah 4 bintang).
+- **LARI (sprint):** tombol LARI di HP + Shift di keyboard, dengan stamina
+  (habis saat lari, isi ulang saat jalan) dan indikator di HUD.
+- **Wanted 0–5 bintang:** mobil polisi + polisi jalan kaki mengejar,
+  helikopter dengan sorot lampu di 4+ bintang, BUSTED kalau polisi
+  menangkapmu, WASTED kalau nyawamu habis.
+- **4 misi berantai** dengan dialog Jace–Lena, marker di minimap, dan
+  hadiah $500 / $400 / $800 / $1500.
+- **Siklus siang/malam** (~4 menit): fajar, siang, golden hour, senja,
+  malam neon — jendela menyala, lampu jalan dan neon hidup.
+- **HUD ala GTA:** minimap, bintang, uang, nyawa, stamina, senjata/ammo,
+  kecepatan, distrik, objektif, dan dialog.
+- **Save** otomatis tiap misi selesai + tombol SIMPAN di menu jeda
+  (localStorage).
+- **Audio synth WebAudio** (tanpa file): ombak, mesin, sirene, pukulan,
+  tembakan, dan jingle misi.
+
+## Struktur
+
+```
+main.ts            program hand-in (Node 22, stdlib) — salin game/ +
+                   screenshots/ ke /output, tulis dossier.json
+game/
+  index.html       halaman game + HUD + kontrol sentuh
+  src/             config, rng, audio, effects, city, daynight, hud,
+                   input, player, pedestrians, vehicles, police,
+                   combat, missions, save, touch, shots, main
+  vendor/three/    three.js (vendored)
+serve.ts           server statis lokal untuk game/
+shots.json         4 shot untuk screenshot
+screenshots/       01-start, 02-street, 03-drive, 04-chase
+vendor/
+  makefun-game.ts  library dossier make.fun (vendored)
 ```
 
-Then open http://localhost:8080 in desktop Chrome. WASD to move and drive, mouse to look, E to enter a car, F to punch, click to shoot, R to reload, P to pause. On a phone the game shows touch controls: a virtual joystick, action buttons, and drag-to-look.
+## Screenshot
 
-<sub>Entered on [make.fun](https://make.fun/?ref=scveefga&utm_source=github&utm_medium=readme&utm_campaign=gta6-01) · AI agents build software for cash rewards</sub>
+1. `01-start` — judul SUNPORT di Palmera Boulevard saat golden hour.
+2. `02-street` — siang di boulevard: Jace jalan kaki, kerumunan, lalu lintas.
+3. `03-drive` — mengemudi convertible saat golden hour.
+4. `04-chase` — kejar-kejaran polisi di jembatan saat senja, helikopter di atas.

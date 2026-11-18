@@ -1,112 +1,108 @@
-// SUNPORT — touch controls for phones (DESIGN.md §10).
-// Shown ONLY on touch devices ('ontouchstart' in window or
-// maxTouchPoints > 0). Desktop keyboard+mouse is untouched: this module
-// returns null there and creates nothing. Every touch control feeds the
-// SAME input object the keyboard uses — joystick writes input.stick,
-// buttons call input.press()/release(), drags add to input.lookDX/DY — so
-// there is exactly one input path into the game.
-export function createTouchControls(input) {
-  const isTouch = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
-  if (!isTouch) return null;
-  const ui = document.getElementById('touch-ui');
-  if (!ui) return null;
-  ui.hidden = false;
-  document.body.classList.add('touch');
+// SUNPORT v2 — touch controls. Shown only on touch devices; every
+// button and the joystick write the same Input flags the keyboard writes,
+// so the game logic has a single input path. Camera drag uses pointer
+// deltas on the game area (outside the buttons and the stick).
 
-  const stick = document.getElementById('stick');
-  const knob = document.getElementById('stick-knob');
-  const R = 48; // joystick travel radius in px
-  let stickId = null;
-  let cx = 0; let cy = 0;
+export class TouchUI {
+  constructor(input, callbacks) {
+    this.input = input;
+    this.cb = callbacks;
+    this.isTouch = ('ontouchstart' in window) || navigator.maxTouchPoints > 0;
+    this.stickId = null;
+    this.stickCenter = { x: 0, y: 0 };
+    this.camId = null;
+    this.camLast = { x: 0, y: 0 };
+  }
 
-  function stickCenter() {
-    const r = stick.getBoundingClientRect();
-    return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+  attach() {
+    if (!this.isTouch) return false;
+    document.body.classList.add('touch');
+    const ui = document.getElementById('touch-ui');
+    ui.hidden = false;
+    // --- Joystick ---------------------------------------------------------
+    const stick = document.getElementById('stick');
+    const knob = document.getElementById('knob');
+    const R = 42;
+    const setKnob = (dx, dy) => {
+      knob.style.transform = `translate(calc(-50% + ${dx}px), calc(-50% + ${dy}px))`;
+    };
+    stick.addEventListener('pointerdown', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      this.stickId = e.pointerId;
+      stick.setPointerCapture(e.pointerId);
+      const r = stick.getBoundingClientRect();
+      this.stickCenter = { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+      this._stickMove(e, R, setKnob);
+    });
+    stick.addEventListener('pointermove', (e) => {
+      if (e.pointerId !== this.stickId) return;
+      e.preventDefault();
+      this._stickMove(e, R, setKnob);
+    });
+    const endStick = (e) => {
+      if (e.pointerId !== this.stickId) return;
+      this.stickId = null;
+      this.input.stick.x = 0;
+      this.input.stick.y = 0;
+      setKnob(0, 0);
+    };
+    stick.addEventListener('pointerup', endStick);
+    stick.addEventListener('pointercancel', endStick);
+    // --- Camera drag on the game area --------------------------------------
+    const game = document.getElementById('game');
+    game.addEventListener('pointerdown', (e) => {
+      if (e.pointerType === 'mouse') return;
+      if (e.target.closest('#touch-ui')) return;
+      this.camId = e.pointerId;
+      this.camLast = { x: e.clientX, y: e.clientY };
+    });
+    game.addEventListener('pointermove', (e) => {
+      if (e.pointerId !== this.camId) return;
+      e.preventDefault();
+      this.input.mouseDX += (e.clientX - this.camLast.x) * 2.2;
+      this.input.mouseDY += (e.clientY - this.camLast.y) * 2.2;
+      this.camLast = { x: e.clientX, y: e.clientY };
+    });
+    const endCam = (e) => { if (e.pointerId === this.camId) this.camId = null; };
+    game.addEventListener('pointerup', endCam);
+    game.addEventListener('pointercancel', endCam);
+    // --- Action buttons -----------------------------------------------------
+    const hold = (id, down, up) => {
+      const el = document.getElementById(id);
+      if (!el) return;
+      el.addEventListener('pointerdown', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        el.classList.add('active');
+        down();
+      });
+      const release = (e) => {
+        el.classList.remove('active');
+        if (up) up();
+      };
+      el.addEventListener('pointerup', release);
+      el.addEventListener('pointercancel', release);
+      el.addEventListener('pointerleave', release);
+    };
+    const tap = (id, fn) => hold(id, fn, null);
+    tap('btn-enter', () => this.cb.onEnter());
+    tap('btn-punch', () => this.cb.onPunch());
+    tap('btn-reload', () => this.cb.onReload());
+    tap('btn-interact', () => this.cb.onInteract());
+    tap('btn-pause', () => this.cb.onPause());
+    hold('btn-fire', () => { this.input.firing = true; this.cb.onFireStart(); }, () => { this.input.firing = false; this.cb.onFireStop(); });
+    hold('btn-sprint', () => { this.input.sprintTouch = true; }, () => { this.input.sprintTouch = false; });
+    return true;
   }
-  function setKnob(dx, dy) {
-    knob.style.transform = `translate(${dx}px, ${dy}px)`;
-  }
-  stick.addEventListener('touchstart', (e) => {
-    if (e.cancelable) e.preventDefault();
-    const t = e.changedTouches[0];
-    stickId = t.identifier;
-    const c = stickCenter();
-    cx = c.x; cy = c.y;
-    moveStick(t);
-  }, { passive: false });
-  function moveStick(t) {
-    let dx = t.clientX - cx;
-    let dy = t.clientY - cy;
+
+  _stickMove(e, R, setKnob) {
+    let dx = e.clientX - this.stickCenter.x;
+    let dy = e.clientY - this.stickCenter.y;
     const len = Math.hypot(dx, dy);
     if (len > R) { dx = (dx / len) * R; dy = (dy / len) * R; }
     setKnob(dx, dy);
-    input.stick.x = dx / R;
-    input.stick.y = dy / R;
+    this.input.stick.x = dx / R;
+    this.input.stick.y = dy / R;
   }
-  function endStick(t) {
-    if (t.identifier !== stickId) return;
-    stickId = null;
-    input.stick.x = 0;
-    input.stick.y = 0;
-    setKnob(0, 0);
-  }
-  window.addEventListener('touchmove', (e) => {
-    for (const t of e.changedTouches) {
-      if (t.identifier === stickId) { if (e.cancelable) e.preventDefault(); moveStick(t); }
-      else if (t.identifier === camId) { if (e.cancelable) e.preventDefault(); moveCam(t); }
-    }
-  }, { passive: false });
-  window.addEventListener('touchend', (e) => {
-    for (const t of e.changedTouches) { endStick(t); endCam(t); }
-  });
-  window.addEventListener('touchcancel', (e) => {
-    for (const t of e.changedTouches) { endStick(t); endCam(t); }
-  });
-
-  // Action buttons: press-and-hold maps to the keyboard action of the
-  // same name. FIRE holds input.firing like holding the mouse button.
-  function bindButton(id, down, up) {
-    const el = document.getElementById(id);
-    if (!el) return;
-    el.addEventListener('touchstart', (e) => { if (e.cancelable) e.preventDefault(); down(); }, { passive: false });
-    el.addEventListener('touchend', (e) => { if (e.cancelable) e.preventDefault(); if (up) up(); }, { passive: false });
-    el.addEventListener('touchcancel', () => { if (up) up(); });
-  }
-  bindButton('btn-enter', () => input.press('enterCar'), () => input.release('enterCar'));
-  bindButton('btn-punch', () => input.press('punch'), () => input.release('punch'));
-  bindButton('btn-fire', () => { input.firing = true; }, () => { input.firing = false; });
-  bindButton('btn-reload', () => input.press('reload'), () => input.release('reload'));
-  bindButton('btn-interact', () => input.press('enterCar'), () => input.release('enterCar'));
-  bindButton('btn-pause', () => input.press('pause'), () => input.release('pause'));
-
-  // Camera drag: any touch on the right side of the screen that did not
-  // start on a control or a menu rotates the camera, like the mouse.
-  let camId = null;
-  let lastX = 0; let lastY = 0;
-  window.addEventListener('touchstart', (e) => {
-    for (const t of e.changedTouches) {
-      const el = document.elementFromPoint(t.clientX, t.clientY);
-      if (el && (el.closest('#touch-ui') || el.closest('.overlay') || el.closest('button'))) continue;
-      if (camId !== null) continue;
-      if (t.clientX < window.innerWidth * 0.35) continue;
-      camId = t.identifier;
-      lastX = t.clientX; lastY = t.clientY;
-    }
-  }, { passive: true });
-  function moveCam(t) {
-    input.lookDX += (t.clientX - lastX) * 2.4;
-    input.lookDY += (t.clientY - lastY) * 2.4;
-    lastX = t.clientX; lastY = t.clientY;
-  }
-  function endCam(t) {
-    if (t.identifier === camId) camId = null;
-  }
-
-  return {
-    isTouch: true,
-    setEnterLabel(text) {
-      const el = document.getElementById('btn-enter');
-      if (el) el.textContent = text;
-    },
-  };
 }

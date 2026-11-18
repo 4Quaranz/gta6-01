@@ -1,195 +1,185 @@
-<!doctype html>
-<html lang="en">
+<!DOCTYPE html>
+<html lang="id">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
 <link rel="icon" href="data:,">
-<title>SUNPORT — open-world crime</title>
+<title>SUNPORT — Kota Pantai, Satu Malam, Empat Misi</title>
 <style>
-  :root {
-    --ink: #f2f6f8; --muted: #b9c4cc; --accent: #ffd24a; --danger: #ff5544;
-    --ok: #39d353; --panel: rgba(12, 20, 28, 0.86); --line: #33505e;
-  }
-  * { box-sizing: border-box; }
-  html, body { margin: 0; height: 100%; overflow: hidden; background: #87c5eb; color: var(--ink); font-family: system-ui, -apple-system, 'Segoe UI', sans-serif; touch-action: none; }
-  #game, #game canvas { position: fixed; inset: 0; display: block; }
-  #hud { position: fixed; inset: 0; pointer-events: none; }
-  #hud[hidden] { display: none; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: #0a1424; }
+  body { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; color: #fff; touch-action: none; -webkit-user-select: none; user-select: none; }
+  #game { position: fixed; inset: 0; }
+  #game canvas { display: block; }
 
-  #crosshair { position: fixed; left: 50%; top: 50%; width: 0; height: 0; }
-  #crosshair i { position: absolute; background: var(--ink); opacity: .9; }
-  #crosshair i:nth-child(1) { left: -1px; top: -11px; width: 2px; height: 8px; }
-  #crosshair i:nth-child(2) { left: -1px; top: 3px; width: 2px; height: 8px; }
-  #crosshair i:nth-child(3) { top: -1px; left: -11px; height: 2px; width: 8px; }
-  #crosshair i:nth-child(4) { top: -1px; left: 3px; height: 2px; width: 8px; }
+  /* ---------- HUD ---------- */
+  #hud { position: fixed; inset: 0; pointer-events: none; z-index: 5; text-shadow: 0 1px 3px rgba(0,0,0,0.8); }
+  #topbar { position: absolute; top: 10px; right: 12px; text-align: right; }
+  #stars { font-size: 26px; letter-spacing: 2px; color: #888; line-height: 1; }
+  #money { font-size: 24px; font-weight: 800; color: #7dff8a; }
+  #mission-box { position: absolute; top: 10px; left: 12px; max-width: 46vw; }
+  #district { font-size: 13px; font-weight: 700; letter-spacing: 2px; color: #ffd24a; text-transform: uppercase; }
+  #objective { font-size: 16px; font-weight: 700; margin-top: 2px; }
+  #minimap-wrap { position: absolute; left: 12px; bottom: 12px; border: 2px solid rgba(255,255,255,0.55); border-radius: 50%; overflow: hidden; width: 180px; height: 180px; background: #1d2b1a; box-shadow: 0 2px 10px rgba(0,0,0,0.5); }
+  #minimap { width: 100%; height: 100%; display: block; }
+  #vitals { position: absolute; left: 204px; bottom: 16px; width: 170px; }
+  .bar-label { font-size: 11px; font-weight: 700; letter-spacing: 1px; display: flex; justify-content: space-between; }
+  .bar { height: 10px; background: rgba(0,0,0,0.55); border: 1px solid rgba(255,255,255,0.4); border-radius: 5px; overflow: hidden; margin: 2px 0 6px; }
+  .bar > div { height: 100%; width: 100%; transition: width 0.15s linear; }
+  #hp-fill { background: #39d353; }
+  #stamina-fill { background: #39d353; }
+  #weapon-box { position: absolute; right: 12px; bottom: 12px; text-align: right; }
+  #weapon { font-size: 13px; font-weight: 700; letter-spacing: 1px; color: #ffd24a; }
+  #ammo-big { font-size: 30px; font-weight: 800; line-height: 1; }
+  #speed { font-size: 20px; font-weight: 700; color: #fff; }
+  #dialogue { position: absolute; left: 50%; transform: translateX(-50%); bottom: 150px; max-width: 640px; width: 92vw; text-align: center; font-size: 17px; font-weight: 600; background: rgba(0,0,0,0.55); padding: 8px 14px; border-radius: 8px; }
+  #dialogue:empty { display: none; }
+  #hint { position: absolute; left: 50%; transform: translateX(-50%); bottom: 108px; font-size: 14px; font-weight: 600; background: rgba(0,0,0,0.45); padding: 5px 12px; border-radius: 6px; white-space: nowrap; }
+  #hint:empty { display: none; }
+  #banner { position: absolute; left: 50%; top: 22%; transform: translate(-50%, -50%); text-align: center; }
+  #banner-title { font-size: 44px; font-weight: 900; letter-spacing: 3px; color: #ffd24a; }
+  #banner-sub { font-size: 18px; font-weight: 600; margin-top: 4px; }
+  #crosshair { position: absolute; left: 50%; top: 50%; width: 14px; height: 14px; margin: -7px 0 0 -7px; display: none; }
+  #crosshair::before, #crosshair::after { content: ""; position: absolute; background: rgba(255,255,255,0.9); box-shadow: 0 0 3px #000; }
+  #crosshair::before { left: 6px; top: 0; width: 2px; height: 14px; }
+  #crosshair::after { top: 6px; left: 0; width: 14px; height: 2px; }
+  #dmg { position: absolute; inset: 0; background: radial-gradient(ellipse at center, transparent 55%, rgba(255,0,0,0.45) 100%); opacity: 0; }
 
-  #dmg { position: fixed; inset: 0; background: radial-gradient(ellipse at center, transparent 55%, rgba(255, 30, 20, 0.55) 100%); opacity: 0; }
-
-  /* GTA-style HUD: minimap bottom-left, health above it, stars top-right. */
-  #minimap { position: fixed; left: 28px; bottom: 28px; width: 180px; height: 180px; border: 2px solid rgba(255,255,255,.35); border-radius: 6px; background: #1d2b1a; }
-  #health { position: fixed; left: 28px; bottom: 222px; width: 220px; text-shadow: 0 1px 4px #000; }
-  #health-label { font-size: 11px; letter-spacing: .16em; color: var(--muted); }
-  #hp-num { font-family: ui-monospace, Menlo, monospace; font-size: 38px; line-height: 1; }
-  #health-bar { height: 7px; margin-top: 6px; background: rgba(0,0,0,.5); border-radius: 4px; overflow: hidden; }
-  #hp-fill { display: block; height: 100%; width: 100%; background: var(--ok); }
-
-  #ammo-box { position: fixed; right: 28px; bottom: 22px; text-align: right; text-shadow: 0 1px 4px #000; }
-  #weapon { font-size: 12px; letter-spacing: .14em; color: var(--muted); }
-  #ammo-big { font-family: ui-monospace, Menlo, monospace; font-size: 40px; line-height: 1; }
-  #speed { font-family: ui-monospace, Menlo, monospace; font-size: 18px; color: var(--accent); margin-top: 4px; }
-
-  #topbar { position: fixed; top: 16px; right: 28px; text-align: right; text-shadow: 0 1px 5px #000; }
-  #stars { font-size: 30px; letter-spacing: 4px; color: #888; }
-  #money { position: fixed; top: 56px; right: 28px; font-family: ui-monospace, Menlo, monospace; font-size: 22px; color: var(--accent); text-shadow: 0 1px 4px #000; }
-  #objective { position: fixed; top: 16px; left: 28px; max-width: 360px; font-size: 13px; letter-spacing: .05em; color: var(--ink); text-shadow: 0 1px 4px #000; }
-  #objective b { color: var(--accent); }
-  #district { position: fixed; top: 56px; left: 28px; font-size: 11px; letter-spacing: .22em; color: var(--accent); text-shadow: 0 1px 4px #000; text-transform: uppercase; }
-  #dialogue { position: fixed; left: 50%; bottom: 160px; transform: translateX(-50%); max-width: 560px; text-align: center; font-size: 15px; font-style: italic; color: #ffe9a8; text-shadow: 0 1px 5px #000; }
-  #hint { position: fixed; left: 50%; bottom: 110px; transform: translateX(-50%); font-size: 14px; text-shadow: 0 1px 4px #000; }
-  #banner { position: fixed; left: 50%; top: 24%; transform: translateX(-50%); text-align: center; text-shadow: 0 2px 12px #000; background: rgba(0,0,0,.35); padding: 14px 28px; border-radius: 10px; }
-  #banner[hidden] { display: none; }
-  #banner-title { font-size: 42px; font-weight: 700; letter-spacing: .03em; }
-  #banner-sub { font-size: 15px; color: var(--muted); margin-top: 6px; }
-
-  .overlay { position: fixed; inset: 0; display: grid; place-items: center; padding: 24px; background: rgba(8, 16, 24, 0.78); }
+  /* ---------- Overlays ---------- */
+  .overlay { position: fixed; inset: 0; z-index: 20; display: flex; align-items: center; justify-content: center; background: rgba(5,10,20,0.55); backdrop-filter: blur(2px); }
   .overlay[hidden] { display: none; }
-  .panel { width: min(520px, 100%); padding: 30px; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; }
-  .panel h1 { margin: 0 0 4px; font-size: 52px; font-weight: 800; letter-spacing: .06em; }
-  .panel h1 span { color: var(--accent); }
-  .panel h2 { margin: 0 0 8px; font-size: 30px; }
-  .panel p { margin: 0 0 18px; font-size: 15px; line-height: 1.55; color: var(--muted); }
-  .panel button { font: inherit; font-weight: 700; padding: 12px 20px; margin: 0 8px 8px 0; border: 1px solid var(--accent); border-radius: 8px; background: var(--accent); color: #1a1400; cursor: pointer; }
-  .panel button:disabled { opacity: .4; cursor: default; }
-  .panel button.ghost { background: transparent; color: var(--ink); border-color: var(--line); }
-  .keys { margin: 18px 0 0; padding: 0; list-style: none; display: grid; gap: 6px; font-size: 13px; color: var(--muted); }
-  .keys kbd { padding: 2px 7px; border: 1px solid var(--line); border-radius: 4px; font-family: ui-monospace, Menlo, monospace; font-size: 12px; color: var(--ink); }
-  #help { margin-top: 14px; font-size: 13px; color: var(--muted); line-height: 1.6; }
-  #help[hidden] { display: none; }
-  #end-title { color: var(--danger); }
+  .panel { text-align: center; padding: 28px 34px; max-width: 560px; width: 92vw; }
+  .title { font-size: 64px; font-weight: 900; letter-spacing: 8px; color: #ffd24a; text-shadow: 0 3px 0 #ff2e88, 0 6px 18px rgba(0,0,0,0.7); }
+  .subtitle { font-size: 17px; margin: 6px 0 22px; color: #e8f4ff; }
+  .big-btn { display: block; width: 100%; margin: 8px 0; padding: 14px 18px; font-size: 17px; font-weight: 800; letter-spacing: 1px; color: #111; background: #ffd24a; border: none; border-radius: 10px; cursor: pointer; }
+  .big-btn:hover { background: #ffe27a; }
+  .big-btn.ghost { background: rgba(255,255,255,0.14); color: #fff; border: 1px solid rgba(255,255,255,0.4); }
+  .big-btn.ghost:hover { background: rgba(255,255,255,0.25); }
+  #controls { margin-top: 14px; text-align: left; font-size: 14px; line-height: 1.7; background: rgba(0,0,0,0.5); padding: 12px 16px; border-radius: 10px; }
+  #controls[hidden] { display: none; }
+  #end-title { font-size: 56px; font-weight: 900; letter-spacing: 6px; color: #ff5544; text-shadow: 0 4px 16px rgba(0,0,0,0.8); }
+  #end-sub { font-size: 17px; margin: 8px 0 20px; }
+  .foot { margin-top: 18px; font-size: 12px; color: rgba(255,255,255,0.6); }
 
-  /* ---- Touch controls: only shown on touch devices (JS unhides #touch-ui). */
-  #touch-ui { position: fixed; inset: 0; pointer-events: none; z-index: 5; }
+  /* ---------- Touch UI ---------- */
+  #touch-ui { position: fixed; inset: 0; z-index: 10; pointer-events: none; display: none; }
+  body.touch #touch-ui { display: block; }
   #touch-ui[hidden] { display: none; }
-  #stick { position: absolute; left: 24px; bottom: 24px; width: 124px; height: 124px; border-radius: 50%; border: 2px solid rgba(255,255,255,.35); background: rgba(255,255,255,.08); pointer-events: auto; }
-  #stick-knob { position: absolute; left: 50%; top: 50%; width: 54px; height: 54px; margin: -27px 0 0 -27px; border-radius: 50%; background: rgba(255,255,255,.4); border: 2px solid rgba(255,255,255,.6); }
-  .tbtn { position: absolute; display: grid; place-items: center; border-radius: 50%; border: 1px solid rgba(255,255,255,.45); background: rgba(12, 20, 28, .55); color: var(--ink); font: 700 11px/1.1 system-ui, sans-serif; text-align: center; pointer-events: auto; user-select: none; -webkit-user-select: none; }
-  .tbtn:active { background: rgba(255, 210, 74, .55); }
-  #btn-fire { right: 20px; bottom: 20px; width: 76px; height: 76px; font-size: 13px; border-color: rgba(255, 85, 68, .8); }
-  #btn-enter { right: 108px; bottom: 28px; width: 64px; height: 64px; }
-  #btn-punch { right: 28px; bottom: 108px; width: 64px; height: 64px; }
-  #btn-reload { right: 108px; bottom: 104px; width: 56px; height: 56px; }
-  #btn-interact { right: 180px; bottom: 28px; width: 56px; height: 56px; }
-  #btn-pause { right: 12px; top: 110px; width: 44px; height: 44px; font-size: 15px; }
+  #stick { position: absolute; left: 18px; bottom: 96px; width: 124px; height: 124px; border-radius: 50%; background: rgba(255,255,255,0.10); border: 2px solid rgba(255,255,255,0.35); pointer-events: auto; touch-action: none; }
+  #knob { position: absolute; left: 50%; top: 50%; width: 54px; height: 54px; border-radius: 50%; background: rgba(255,255,255,0.35); border: 2px solid rgba(255,255,255,0.6); transform: translate(-50%, -50%); }
+  .tbtn { position: absolute; pointer-events: auto; touch-action: none; min-width: 72px; min-height: 56px; padding: 10px 8px; font-size: 12px; font-weight: 800; letter-spacing: 0.5px; line-height: 1.25; white-space: normal; text-align: center; color: #fff; background: rgba(10,16,28,0.55); border: 2px solid rgba(255,255,255,0.5); border-radius: 14px; }
+  .tbtn.active { background: rgba(255,210,74,0.75); color: #111; }
+  #btn-fire { right: 16px; bottom: 96px; width: 84px; height: 84px; border-radius: 50%; font-size: 13px; background: rgba(255,46,136,0.55); }
+  #btn-punch { right: 112px; bottom: 168px; width: 72px; height: 72px; border-radius: 50%; }
+  #btn-sprint { right: 112px; bottom: 88px; width: 72px; height: 72px; border-radius: 50%; background: rgba(57,211,83,0.45); }
+  #btn-enter { right: 16px; bottom: 192px; width: 84px; }
+  #btn-interact { right: 196px; bottom: 96px; }
+  #btn-reload { right: 196px; bottom: 168px; }
+  #btn-pause { right: 16px; top: 64px; min-width: 48px; min-height: 44px; font-size: 15px; }
 
-  /* ---- Touch layout: minimap moves top-left so the joystick owns bottom-left. */
-  body.touch #minimap { left: 12px; top: 12px; bottom: auto; width: 110px; height: 110px; }
-  body.touch #health { left: 12px; top: 132px; bottom: auto; width: 130px; }
-  body.touch #hp-num { font-size: 24px; }
-  body.touch #objective { left: 12px; top: 212px; max-width: 46vw; font-size: 12px; }
-  body.touch #district { left: 12px; top: 262px; }
-  body.touch #dialogue { bottom: 250px; font-size: 13px; max-width: 86vw; }
-  body.touch #hint { bottom: 200px; font-size: 12px; }
-  body.touch #ammo-box { right: 12px; bottom: 200px; }
-  body.touch #ammo-big { font-size: 28px; }
-  body.touch #speed { font-size: 15px; }
-  body.touch #stars { font-size: 24px; }
-  body.touch #topbar { right: 12px; top: 12px; }
-  body.touch #money { right: 12px; top: 48px; font-size: 18px; }
-  body.touch #banner-title { font-size: 30px; }
-
-  /* ---- Small screens (any device). */
-  @media (max-width: 760px) {
-    #minimap { width: 140px; height: 140px; }
-    #health { bottom: 182px; width: 170px; }
-    #hp-num { font-size: 28px; }
-    #ammo-big { font-size: 30px; }
+  /* ---------- Small screens ---------- */
+  @media (max-width: 700px) {
+    #minimap-wrap { width: 110px; height: 110px; left: 10px; bottom: 10px; }
+    #vitals { left: 128px; bottom: 12px; width: 110px; }
+    #weapon-box { right: 10px; bottom: 300px; }
+    #mission-box { max-width: 58vw; }
+    #objective { font-size: 14px; }
+    #stars { font-size: 21px; }
+    #money { font-size: 19px; }
     #banner-title { font-size: 30px; }
-    .panel h1 { font-size: 40px; }
-    .panel { padding: 20px; }
+    .title { font-size: 44px; letter-spacing: 5px; }
+    #dialogue { bottom: 330px; font-size: 15px; }
+    #hint { bottom: 292px; font-size: 12px; max-width: 92vw; white-space: normal; text-align: center; }
+    .tbtn { font-size: 11px; min-width: 68px; padding: 9px 4px; }
+    #stick { bottom: 210px; }
+    body.touch #minimap-wrap { top: 96px; bottom: auto; }
+    body.touch #vitals { left: 128px; top: 100px; bottom: auto; }
+    body.touch #weapon-box { bottom: 300px; }
   }
 </style>
 </head>
 <body>
 <div id="game"></div>
 
-<div id="hud" hidden>
-  <div id="dmg"></div>
-  <div id="crosshair"><i></i><i></i><i></i><i></i></div>
-  <div id="health">
-    <div id="health-label">HEALTH</div>
-    <div id="hp-num">100</div>
-    <div id="health-bar"><span id="hp-fill"></span></div>
+<div id="hud">
+  <div id="topbar">
+    <div id="stars">☆☆☆☆☆</div>
+    <div id="money">$120</div>
   </div>
-  <div id="ammo-box">
+  <div id="mission-box">
+    <div id="district">PALMERA BLVD</div>
+    <div id="objective">Curi mobil apa saja</div>
+  </div>
+  <div id="minimap-wrap"><canvas id="minimap" width="180" height="180"></canvas></div>
+  <div id="vitals">
+    <div class="bar-label"><span>NYAWA</span><span id="hp-num">100</span></div>
+    <div class="bar"><div id="hp-fill"></div></div>
+    <div class="bar-label"><span>STAMINA</span><span>LARI</span></div>
+    <div class="bar" id="stamina"><div id="stamina-fill"></div></div>
+  </div>
+  <div id="weapon-box">
     <div id="weapon">FISTS</div>
-    <div id="ammo-big"><span id="ammo">—</span></div>
+    <div id="ammo-big">—</div>
     <div id="speed"></div>
   </div>
-  <div id="topbar"><div id="stars">☆☆☆☆☆</div></div>
-  <div id="money">$120</div>
-  <div id="objective"></div>
-  <div id="district">Sunport</div>
   <div id="dialogue"></div>
   <div id="hint"></div>
-  <div id="banner" hidden><div id="banner-title"></div><div id="banner-sub"></div></div>
-  <canvas id="minimap" width="180" height="180"></canvas>
+  <div id="banner" hidden>
+    <div id="banner-title"></div>
+    <div id="banner-sub"></div>
+  </div>
+  <div id="crosshair"></div>
+  <div id="dmg"></div>
 </div>
 
 <div id="touch-ui" hidden>
-  <div id="stick"><div id="stick-knob"></div></div>
-  <button id="btn-enter" class="tbtn" type="button">MASUK MOBIL</button>
-  <button id="btn-punch" class="tbtn" type="button">PUKUL</button>
-  <button id="btn-fire" class="tbtn" type="button">TEMBAK</button>
-  <button id="btn-reload" class="tbtn" type="button">RELOAD</button>
-  <button id="btn-interact" class="tbtn" type="button">INTERAKSI</button>
-  <button id="btn-pause" class="tbtn" type="button">II</button>
+  <div id="stick"><div id="knob"></div></div>
+  <button class="tbtn" id="btn-enter" type="button">MASUK MOBIL</button>
+  <button class="tbtn" id="btn-punch" type="button">PUKUL</button>
+  <button class="tbtn" id="btn-fire" type="button">TEMBAK</button>
+  <button class="tbtn" id="btn-reload" type="button">RELOAD</button>
+  <button class="tbtn" id="btn-interact" type="button">INTERAKSI</button>
+  <button class="tbtn" id="btn-sprint" type="button">LARI</button>
+  <button class="tbtn" id="btn-pause" type="button">II</button>
 </div>
 
-<div id="menu" class="overlay">
-  <section class="panel" role="dialog" aria-modal="true">
-    <h1>SUN<span>PORT</span></h1>
-    <p>Sunport is a sunny coastal city that never sleeps — and never forgets a debt. You are <b style="color:var(--ink)">Jace Moreno</b>, a getaway driver pulled into one last crew with <b style="color:var(--ink)">Lena Cruz</b>. Steal cars, dodge the Sunport PD, and run four jobs in <b style="color:var(--ink)">Sunport Nights</b> — from a boosted ride to the Big One at Sunport First Bank.</p>
-    <button id="new-btn" type="button">New Game</button>
-    <button id="continue-btn" type="button" class="ghost">Continue</button>
-    <button id="help-btn" type="button" class="ghost">Controls</button>
-    <div id="help" hidden>
-      <b style="color:var(--ink)">WASD</b> move / drive &nbsp;·&nbsp; <b style="color:var(--ink)">Mouse</b> look &nbsp;·&nbsp; <b style="color:var(--ink)">Shift</b> run<br>
-      <b style="color:var(--ink)">E</b> enter / exit car &nbsp;·&nbsp; <b style="color:var(--ink)">F</b> punch &nbsp;·&nbsp; <b style="color:var(--ink)">Click</b> shoot<br>
-      <b style="color:var(--ink)">R</b> reload &nbsp;·&nbsp; <b style="color:var(--ink)">Space</b> jump / handbrake &nbsp;·&nbsp; <b style="color:var(--ink)">M</b> mute<br>
-      <b style="color:var(--ink)">P</b> pause &nbsp;·&nbsp; <b style="color:var(--ink)">H</b> help. Stealing cars and hurting people raises your wanted level — hide to cool off.<br>
-      <b style="color:var(--ink)">Touch:</b> left stick to move / drive, drag right side to look, buttons to enter, punch, shoot and reload.
+<div class="overlay" id="menu">
+  <div class="panel">
+    <div class="title">SUNPORT</div>
+    <div class="subtitle">Kota pantai. Satu malam. Empat misi.<br>Jace Moreno &amp; Lena Cruz — Sunport Nights.</div>
+    <button class="big-btn" id="btn-new-game" type="button">▶ MULAI BARU</button>
+    <button class="big-btn ghost" id="btn-continue" type="button" hidden>LANJUTKAN</button>
+    <button class="big-btn ghost" id="btn-controls" type="button">KONTROL</button>
+    <div id="controls" hidden>
+      <b>PC:</b> WASD jalan · mouse kanan seret untuk putar kamera/bidik · klik kiri tembak · Shift lari · Space lompat / handbrake · E masuk/keluar mobil &amp; interaksi · F pukul · R reload · 1/2 ganti senjata · P/Esc jeda · M suara<br>
+      <b>Mobil (PC):</b> W/S gas &amp; rem/mundur · A/D setir · Space handbrake · kamera mengikuti mobil<br>
+      <b>HP:</b> joystick kiri untuk jalan/mengemudi · tombol kanan untuk aksi · drag layar kanan untuk kamera · tombol LARI untuk sprint<br>
+      <b>Misi:</b> curi mobil → jemput Lena → buat wanted 2 bintang → rampok bank → kabur ke pulau.
     </div>
-    <ul class="keys">
-      <li>Follow the yellow beacon and the minimap marker to each job.</li>
-      <li>Getting busted or wasted restarts the current mission — and costs you at the hospital.</li>
-    </ul>
-  </section>
+    <div class="foot">Game orisinal — bukan GTA, bukan Rockstar. Semua aset dibuat dari kode.</div>
+  </div>
 </div>
 
-<div id="pause" class="overlay" hidden>
-  <section class="panel" role="dialog" aria-modal="true">
-    <h2>Paused</h2>
-    <p>Sunport waits for no one — except right now.</p>
-    <button id="resume-btn" type="button">Resume</button>
-    <button id="save-btn" type="button" class="ghost">Save game</button>
-    <button id="quit-btn" type="button" class="ghost">Quit to menu</button>
-  </section>
+<div class="overlay" id="pause" hidden>
+  <div class="panel">
+    <div class="title" style="font-size:40px">JEDA</div>
+    <button class="big-btn" id="btn-resume" type="button">LANJUTKAN</button>
+    <button class="big-btn ghost" id="save-btn" type="button">SIMPAN</button>
+    <button class="big-btn ghost" id="btn-quit" type="button">MENU UTAMA</button>
+  </div>
 </div>
 
-<div id="endcard" class="overlay" hidden>
-  <section class="panel" role="dialog" aria-modal="true">
-    <h2 id="end-title">BUSTED</h2>
-    <p id="end-sub"></p>
-    <button id="end-btn" type="button">Back to menu</button>
-  </section>
+<div class="overlay" id="end" hidden>
+  <div class="panel">
+    <div id="end-title">BUSTED</div>
+    <div id="end-sub"></div>
+    <button class="big-btn" id="end-retry" type="button">COBA LAGI</button>
+    <button class="big-btn ghost" id="end-menu" type="button">MENU UTAMA</button>
+  </div>
 </div>
 
 <script type="importmap">
-{
-  "imports": {
-    "three": "./vendor/three/three.module.min.js"
-  }
-}
+{ "imports": { "three": "./vendor/three/three.module.min.js" } }
 </script>
 <script type="module" src="./src/main.js"></script>
 </body>

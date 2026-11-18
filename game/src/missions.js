@@ -1,138 +1,216 @@
-// SUNPORT — "Sunport Nights": four chained missions for Jace Moreno.
-// Each mission is a list of steps; a step is done when its check passes.
-// Busted or wasted during a mission restarts that mission from step 0.
-// The beacon in the world and the minimap both point at the current step.
-import { LANDMARKS } from './city.js';
-import { CFG } from './config.js';
+// SUNPORT v2 — "Sunport Nights": four linked jobs for Jace and Lena.
+// Wheels → Pickup → Getaway → The Big One. Each step has a beacon on
+// the minimap, an objective line, short dialogue, and a payout.
 
-export const MISSIONS = [
-  {
-    id: 'wheels',
-    title: 'Mission 1 — Wheels',
-    story: "Rico needs a ride, fast. Steal any parked car and bring it to his garage.",
-    steps: [
-      { text: 'Steal a car — walk up to one and press E', target: null, check: (s) => !s.player.onFoot, dialog: 'Lena: "Rico\'s waiting, Jace. Boost something quick — and don\'t get cute."' },
-      { text: "Drive to Rico's Garage", target: LANDMARKS.garage, check: (s) => !s.player.onFoot && near(s, LANDMARKS.garage, 10), dialog: 'Jace: "One clean ride, coming up. Hold the garage door."' },
-    ],
-  },
-  {
-    id: 'pickup',
-    title: 'Mission 2 — Pickup',
-    story: 'A package is waiting at Pier 9. Grab it, then lay low at the safehouse.',
-    steps: [
-      { text: 'Pick up the package at Pier 9', target: LANDMARKS.packageSpot, check: (s) => near(s, LANDMARKS.packageSpot, 6), dialog: 'Lena: "Package is at Pier 9. Grab it before the tide turns."' },
-      { text: 'Take the package to the Safehouse', target: LANDMARKS.safehouse, check: (s) => near(s, LANDMARKS.safehouse, 8), dialog: 'Jace: "Got it. Safehouse, then we vanish."' },
-    ],
-  },
-  {
-    id: 'getaway',
-    title: 'Mission 3 — Getaway',
-    story: 'The crew got spotted. The cops are on you — lose them and reach the safehouse.',
-    steps: [
-      { text: 'Escape the police — reach the Safehouse with 3 stars', target: LANDMARKS.safehouse, check: (s) => near(s, LANDMARKS.safehouse, 8), dialog: 'Lena: "The easy score went wrong — the whole city\'s on us now. DRIVE!"' },
-    ],
-    onStart: (s) => { s.wantedHeat = 61; },
-  },
-  {
-    id: 'bigone',
-    title: 'Mission 4 — The Big One',
-    story: 'Sunport First Bank. Grab the cash, then vanish. The whole city will be looking for you.',
-    steps: [
-      { text: 'Reach Sunport First Bank', target: LANDMARKS.bank, check: (s) => near(s, LANDMARKS.bank, 10), dialog: 'Jace: "Sunport First Bank. In and out, Lena. Like we planned."' },
-      { text: 'Grab the cash — hold your ground 4 seconds', target: LANDMARKS.bank, timed: 4, check: (s) => near(s, LANDMARKS.bank, 10), dialog: 'Lena: "Four seconds on the vault. Keep your head down!"' },
-      { text: 'Escape with 4 stars — reach the Safehouse', target: LANDMARKS.safehouse, check: (s) => near(s, LANDMARKS.safehouse, 8), dialog: 'Jace: "We\'re rich — if we make the safehouse alive."' },
-    ],
-    onStart: (s) => { s.wantedHeat = 0; },
-  },
-];
+import * as THREE from 'three';
+import { GARAGE, TARGETS } from './config.js';
+import { buildAvatar, poseWalk } from './player.js';
 
-function near(s, lm, r) {
-  const p = s.player;
-  const x = p.onFoot ? p.x : p.car.x;
-  const z = p.onFoot ? p.z : p.car.z;
-  return Math.hypot(x - lm.x, z - lm.z) < r;
-}
+const DIALOGUE = {
+  m0start: 'JACE: Butuh mobil. Yang mana saja — cepat.',
+  m0car: 'LENA: Bagus. Bawa ke garasi Rico — jangan sampai ketangkap.',
+  m0done: 'RICO: Mobil mulus. $500 buatmu, Jace.',
+  m1start: 'LENA: Jemput aku di sudut Neon Strip. Cepat, sebelum Kane datang.',
+  m1pick: 'LENA: Akhirnya. Ke marina, Jace. Ada yang harus kuambil.',
+  m1done: 'LENA: Beres. $400. Kau masih bisa diandalkan.',
+  m2start: 'JACE: Butuh panas. Buat polisi sibuk, lalu kabur ke Rustport.',
+  m2hot: 'LENA: Bagus, mereka mengejarmu. Sekarang ke Rustport — cepat!',
+  m2done: 'MAMA DELIA: Barang aman. $800. Jangan kembali ke sini dulu.',
+  m3start: 'LENA: Ini yang besar. Bank Sunport. Masuk, ambil, kabur.',
+  m3hold: 'JACE: Alarm bunyi. Tahan posisi sampai brankas terbuka!',
+  m3run: 'LENA: Dapat! Ke pulau — jembatan Cayo Verde. Jangan berhenti!',
+  m3done: 'JACE: Sunport Nights selesai. Kita kaya... untuk sekarang.',
+};
 
-export function missionState(state) {
-  return {
-    mission: MISSIONS[state.missionIdx] || null,
-    step: state.missionIdx < MISSIONS.length ? MISSIONS[state.missionIdx].steps[state.missionStep] : null,
-    done: state.missionIdx >= MISSIONS.length,
-  };
-}
-
-export function startMission(state, idx) {
-  state.missionIdx = idx;
-  state.missionStep = 0;
-  state.missionTimer = 0;
-  const m = MISSIONS[idx];
-  if (m && m.onStart) m.onStart(state);
-  state.banner = { title: m.title, sub: m.story };
-  state.bannerT = 5;
-  if (m && m.steps[0] && m.steps[0].dialog) {
-    state.dialogue = m.steps[0].dialog;
-    state.dialogT = 6;
+export class Missions {
+  constructor(scene, hud, audio) {
+    this.scene = scene;
+    this.hud = hud;
+    this.audio = audio;
+    this.idx = 0;
+    this.step = 0;
+    this.target = null;
+    this.holdT = 0;
+    this.done = false;
+    // Lena: stands at the pickup point, follows Jace, rides along, leaves.
+    this.lena = buildAvatar({ shirt: 0xd84a4a, pants: 0x2a2f38, skin: 0xe8b88a, hair: 0x2a1a1a, face: 6 });
+    this.lena.group.visible = false;
+    this.lenaState = 'hidden'; // hidden | waiting | follow | riding | leaving
+    this.lenaPhase = 0;
+    this.leaveT = 0;
+    scene.add(this.lena.group);
   }
-}
 
-// Advance the current mission; returns 'done' | 'step' | 'failed' | null.
-export function updateMission(state, dt) {
-  if (state.missionIdx >= MISSIONS.length) return null;
-  const m = MISSIONS[state.missionIdx];
-  const step = m.steps[state.missionStep];
-  if (!step) return null;
-  if (step.timed) {
-    if (step.check(state)) {
-      state.missionTimer += dt;
-      state.hint = `Grabbing the cash… ${Math.ceil(step.timed - state.missionTimer)}s`;
-      if (state.missionTimer >= step.timed) return advance(state);
-    } else {
-      state.missionTimer = 0;
+  reset() {
+    this.idx = 0;
+    this.step = 0;
+    this.holdT = 0;
+    this.done = false;
+    this.lenaState = 'hidden';
+    this.lena.group.visible = false;
+    this.startMission(0);
+  }
+
+  startMission(i) {
+    this.idx = i;
+    this.step = 0;
+    this.holdT = 0;
+    if (i === 0) {
+      this.target = null;
+      this.hud.setObjective('Curi mobil apa saja');
+      this.hud.setDialogue(DIALOGUE.m0start);
+    } else if (i === 1) {
+      this.target = { x: TARGETS.lenaPickup.x, z: TARGETS.lenaPickup.z };
+      this.lenaState = 'waiting';
+      this.lena.group.visible = true;
+      this.lena.group.position.set(TARGETS.lenaPickup.x, 0, TARGETS.lenaPickup.z);
+      this.hud.setObjective('Jemput Lena di Neon Strip');
+      this.hud.setDialogue(DIALOGUE.m1start);
+    } else if (i === 2) {
+      this.target = null;
+      this.hud.setObjective('Buat wanted naik ke 2 bintang');
+      this.hud.setDialogue(DIALOGUE.m2start);
+    } else if (i === 3) {
+      this.target = { x: TARGETS.bank.x, z: TARGETS.bank.z };
+      this.hud.setObjective('Pergi ke Bank Sunport');
+      this.hud.setDialogue(DIALOGUE.m3start);
     }
-    return null;
   }
-  if (step.check(state)) return advance(state);
-  return null;
-}
 
-function advance(state) {
-  const m = MISSIONS[state.missionIdx];
-  state.missionStep += 1;
-  state.missionTimer = 0;
-  if (state.missionStep < m.steps.length && m.steps[state.missionStep].dialog) {
-    state.dialogue = m.steps[state.missionStep].dialog;
-    state.dialogT = 6;
-  }
-  if (state.missionStep >= m.steps.length) {
-    const reward = CFG.missionRewards[state.missionIdx];
-    state.player.money += reward;
-    state.missionsDone.push(m.id);
-    state.audio.missionDone();
-    if (state.missionIdx === 2) state.wantedHeat = 0; // getaway worked
-    if (state.missionIdx === 3) state.wantedHeat = 0;
-    state.banner = { title: 'MISSION PASSED', sub: `${m.title} — +$${reward}` };
-    state.bannerT = 4;
-    state.missionIdx += 1;
-    state.missionStep = 0;
-    if (state.missionIdx < MISSIONS.length) {
-      const next = MISSIONS[state.missionIdx];
-      if (next.onStart) next.onStart(state);
-      state.banner = { title: `${next.title}`, sub: next.story };
-      state.bannerT = 5;
+  complete(state, title, sub) {
+    state.player.money += this.reward();
+    this.audio.jingle();
+    this.hud.showBanner(title, sub);
+    if (this.idx >= 3) {
+      this.done = true;
+      this.target = null;
+      this.hud.setObjective('Sunport Nights selesai!');
+      this.hud.setDialogue(DIALOGUE.m3done);
     } else {
-      state.banner = { title: 'SUNPORT NIGHTS COMPLETE', sub: 'Jace pulled off the Big One. Free roam — the city is yours.' };
-      state.bannerT = 6;
+      this.startMission(this.idx + 1);
     }
-    return 'done';
+    if (state.onMissionComplete) state.onMissionComplete();
   }
-  return 'step';
-}
 
-export function failMission(state, reason) {
-  if (state.missionIdx >= MISSIONS.length) return;
-  const m = MISSIONS[state.missionIdx];
-  state.missionStep = 0;
-  state.missionTimer = 0;
-  state.banner = { title: 'MISSION FAILED', sub: `${m.title} — ${reason}. Try again.` };
-  state.bannerT = 4;
+  reward() {
+    return [500, 400, 800, 1500][this.idx] || 0;
+  }
+
+  distTo(p, t) {
+    return Math.hypot(p.x - t.x, p.z - t.z);
+  }
+
+  update(dt, ctx) {
+    const p = ctx.player;
+    const state = ctx.state;
+    if (this.done) return;
+    // --- Lena's behaviour -------------------------------------------------
+    if (this.lenaState === 'follow') {
+      const bx = p.x - Math.sin(p.yaw) * 1.6;
+      const bz = p.z - Math.cos(p.yaw) * 1.6;
+      const d = Math.hypot(bx - this.lena.group.position.x, bz - this.lena.group.position.z);
+      if (d > 0.4) {
+        const sp = 4.6;
+        this.lena.group.position.x += ((bx - this.lena.group.position.x) / d) * sp * dt;
+        this.lena.group.position.z += ((bz - this.lena.group.position.z) / d) * sp * dt;
+        this.lena.group.rotation.y = Math.atan2(bx - this.lena.group.position.x, bz - this.lena.group.position.z);
+        this.lenaPhase += dt * sp * 2.1;
+        poseWalk(this.lena, this.lenaPhase, 0.65, 0.05);
+      }
+      if (!p.onFoot) {
+        this.lenaState = 'riding';
+        this.lena.group.visible = false;
+      }
+    } else if (this.lenaState === 'riding' && p.onFoot) {
+      this.lenaState = 'follow';
+      this.lena.group.visible = true;
+      this.lena.group.position.set(p.x + 1.5, 0, p.z + 1.5);
+    } else if (this.lenaState === 'leaving') {
+      this.leaveT -= dt;
+      this.lena.group.position.z += 1.6 * dt;
+      this.lenaPhase += dt * 3.4;
+      poseWalk(this.lena, this.lenaPhase, 0.6, 0.04);
+      if (this.leaveT <= 0) {
+        this.lenaState = 'hidden';
+        this.lena.group.visible = false;
+      }
+    } else if (this.lenaState === 'waiting') {
+      // Idle sway at the pickup corner.
+      const t = ctx.time;
+      this.lena.armL.rotation.x = Math.sin(t * 1.2) * 0.05;
+      this.lena.armR.rotation.x = -Math.sin(t * 1.2) * 0.05;
+    }
+
+    // --- Mission steps -----------------------------------------------------
+    if (this.idx === 0) {
+      if (this.step === 0) {
+        if (p.car) {
+          this.step = 1;
+          this.target = { x: GARAGE.x, z: GARAGE.z };
+          this.hud.setObjective("Bawa mobil ke Rico's Garage");
+          this.hud.setDialogue(DIALOGUE.m0car);
+        }
+      } else if (this.step === 1) {
+        if (this.distTo(p, GARAGE) < 12) {
+          this.complete(state, 'WHEELS SELESAI', '+$500 — mobil sudah di garasi');
+        }
+      }
+    } else if (this.idx === 1) {
+      if (this.step === 0) {
+        if (this.distTo(p, TARGETS.lenaPickup) < 4) {
+          this.step = 1;
+          this.target = { x: TARGETS.marinaMeet.x, z: TARGETS.marinaMeet.z };
+          this.lenaState = 'follow';
+          this.hud.setObjective('Antar Lena ke marina');
+          this.hud.setDialogue(DIALOGUE.m1pick);
+        }
+      } else if (this.step === 1) {
+        if (this.distTo(p, TARGETS.marinaMeet) < 10) {
+          this.lenaState = 'leaving';
+          this.leaveT = 3;
+          this.complete(state, 'PICKUP SELESAI', '+$400 — Lena sudah di marina');
+        }
+      }
+    } else if (this.idx === 2) {
+      if (this.step === 0) {
+        if (state.wanted >= 2) {
+          this.step = 1;
+          this.target = { x: TARGETS.rustportDrop.x, z: TARGETS.rustportDrop.z };
+          this.hud.setObjective('Kabur ke Rustport — jangan sampai ketangkap');
+          this.hud.setDialogue(DIALOGUE.m2hot);
+        }
+      } else if (this.step === 1) {
+        if (this.distTo(p, TARGETS.rustportDrop) < 12 && state.wanted >= 1) {
+          this.complete(state, 'GETAWAY SELESAI', '+$800 — lolos dari kejaran');
+        }
+      }
+    } else if (this.idx === 3) {
+      if (this.step === 0) {
+        if (this.distTo(p, TARGETS.bank) < 6) {
+          this.step = 1;
+          this.holdT = 0;
+          this.hud.setObjective('Tahan posisi di bank — brankas sedang dibuka');
+          this.hud.setDialogue(DIALOGUE.m3hold);
+        }
+      } else if (this.step === 1) {
+        if (this.distTo(p, TARGETS.bank) < 8) {
+          this.holdT += dt;
+          state.wantedHeat = Math.min(100, state.wantedHeat + 5 * dt);
+          this.hud.setObjective(`Tahan posisi... ${Math.ceil(8 - this.holdT)} dtk`);
+          if (this.holdT >= 8) {
+            this.step = 2;
+            this.target = { x: 320, z: 0 };
+            this.hud.setObjective('Kabur ke Cayo Verde lewat jembatan');
+            this.hud.setDialogue(DIALOGUE.m3run);
+          }
+        } else {
+          this.holdT = Math.max(0, this.holdT - dt * 2);
+        }
+      } else if (this.step === 2) {
+        if (this.distTo(p, { x: 320, z: 0 }) < 15) {
+          this.complete(state, 'THE BIG ONE SELESAI', '+$1500 — Sunport Nights tamat');
+        }
+      }
+    }
+  }
 }

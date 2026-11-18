@@ -1,24 +1,18 @@
-// SUNPORT — save and load through localStorage.
-// Autosave runs every 15 s and after every finished mission; Continue on
-// the start screen restores money, mission progress, weapons and position.
-import { SAVE_KEY } from './config.js';
+// SUNPORT v2 — save/load in localStorage (one key, one small object).
+
+export const SAVE_KEY = 'sunport-save-v1';
 
 export function saveGame(state) {
   try {
-    const p = state.player;
     const data = {
-      money: p.money,
+      money: Math.floor(state.player.money),
       missionIdx: state.missionIdx,
-      missionStep: state.missionStep,
-      hp: Math.max(1, Math.round(p.hp)),
-      hasPistol: p.hasPistol,
-      mag: p.mag,
-      reserve: p.reserve,
-      x: Math.round(p.x * 10) / 10,
-      z: Math.round(p.z * 10) / 10,
-      completed: state.missionsDone,
+      health: Math.round(state.player.health),
+      x: Math.round(state.player.x * 10) / 10,
+      z: Math.round(state.player.z * 10) / 10,
+      timeOfDay: state.timeOfDay ?? 0.06,
     };
-    window.localStorage.setItem(SAVE_KEY, JSON.stringify(data));
+    localStorage.setItem(SAVE_KEY, JSON.stringify(data));
     return true;
   } catch {
     return false;
@@ -27,16 +21,16 @@ export function saveGame(state) {
 
 export function loadGame() {
   try {
-    const raw = window.localStorage.getItem(SAVE_KEY);
+    const raw = localStorage.getItem(SAVE_KEY);
     if (!raw) return null;
-    const d = JSON.parse(raw);
-    if (typeof d.money !== 'number' || typeof d.missionIdx !== 'number') return null;
-    return d;
+    const data = JSON.parse(raw);
+    if (typeof data.money !== 'number') return null;
+    return data;
   } catch {
     return null;
   }
 }
 
-export function hasSave() {
-  return loadGame() !== null;
+export function clearSave() {
+  try { localStorage.removeItem(SAVE_KEY); } catch { /* ignore */ }
 }

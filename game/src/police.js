@@ -1,204 +1,279 @@
-// SUNPORT — the wanted system and the Sunport PD.
-// Heat 0..100 maps to 0..5 stars. Crimes add heat; hiding from every cop
-// lets it bleed off. Police cars spawn at the map edge and ram the player;
-// foot cops chase on foot, and touching Jace while he is on foot busts him.
-// While the player is in a car, cops ram the car instead of busting.
-// At 4 stars and up a police helicopter circles overhead, its searchlight
-// pinned on the player.
+// SUNPORT v2 — the police. Wanted stars scale the response: patrol cars,
+// foot cops, and a spotlight helicopter at 4+. The key rule from the
+// user's feedback: after the player punches someone, police cars do NOT
+// ram straight away. They approach, slow down and circle the player at
+// a distance (STANDOFF), and may only ram after a few seconds have
+// passed — or when the wanted level is already high.
+
 import * as THREE from 'three';
-import { CFG } from './config.js';
-import { createCar, syncCarMesh } from './vehicles.js';
-import { createPedMesh } from './pedestrians.js';
+import { WANTED, ROADS_X, ROADS_Z } from './config.js';
+import { makeCarMesh } from './vehicles.js';
+import { buildAvatar, poseWalk } from './player.js';
+import { collideCircle, clampToLand } from './city.js';
 
-export function wantedStars(heat) {
-  if (heat <= 0) return 0;
-  return Math.min(5, Math.ceil(heat / 20));
+function policeCarMesh() {
+  const g = makeCarMesh('sedan', 0x16181c);
+  // White doors + light bar.
+  const white = new THREE.MeshStandardMaterial({ color: 0xf2f2f2, roughness: 0.4, metalness: 0.3 });
+  const door = new THREE.Mesh(new THREE.BoxGeometry(1.98, 0.5, 1.6), white);
+  door.position.set(0, 0.72, -0.1);
+  door.castShadow = true;
+  g.add(door);
+  const barMat = new THREE.MeshStandardMaterial({ color: 0xff2222, emissive: 0xff2222, emissiveIntensity: 1.5 });
+  const bar = new THREE.Mesh(new THREE.BoxGeometry(1.1, 0.18, 0.4), barMat);
+  bar.position.set(0, 1.75, -0.1);
+  g.add(bar);
+  const bar2Mat = new THREE.MeshStandardMaterial({ color: 0x2244ff, emissive: 0x2244ff, emissiveIntensity: 1.5 });
+  const bar2 = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.18, 0.4), bar2Mat);
+  bar2.position.set(0.3, 1.75, -0.1);
+  g.add(bar2);
+  g.userData.barMat = barMat;
+  g.userData.bar2Mat = bar2Mat;
+  return g;
 }
 
-export function addWanted(state, heat) {
-  state.wantedHeat = Math.min(CFG.wantedMax, state.wantedHeat + heat);
-}
-
-export function updateWanted(state, dt) {
-  const stars = wantedStars(state.wantedHeat);
-  state.wanted = stars;
-  // Decay only while no cop can see the player.
-  const seen = state.cops.some((c) => c.alive && Math.hypot(c.x - state.player.x, c.z - state.player.z) < 45)
-    || state.policeCars.some((c) => Math.hypot(c.x - state.player.x, c.z - state.player.z) < 45);
-  if (!seen && state.wantedHeat > 0) {
-    state.wantedHeat = Math.max(0, state.wantedHeat - CFG.wantedDecay * dt);
-  }
-  // Keep the pursuit sized to the stars: one patrol car per star, up to 3,
-  // plus foot cops from 2 stars up.
-  const wantCars = Math.min(3, stars);
-  while (state.policeCars.length < wantCars) spawnPoliceCar(state);
-  while (state.policeCars.length > wantCars) {
-    const c = state.policeCars.pop();
-    state.scene.remove(c.mesh);
-  }
-  const wantCops = stars >= 2 ? Math.min(3, stars - 1) : 0;
-  while (state.cops.filter((c) => c.alive).length < wantCops) spawnFootCop(state);
-}
-
-function spawnPoliceCar(state) {
-  const p = state.player;
-  const angle = Math.random() * Math.PI * 2;
-  const x = p.x + Math.cos(angle) * 60;
-  const z = p.z + Math.sin(angle) * 60;
-  const car = createCar(x, z, 0, 0x111111, 'police');
-  car.speed = 10;
-  state.scene.add(car.mesh);
-  state.policeCars.push(car);
-}
-
-function spawnHeli(state) {
-  const p = state.player;
-  const group = new THREE.Group();
-  const bodyMat = new THREE.MeshLambertMaterial({ color: 0x1a3a8a });
-  const body = new THREE.Mesh(new THREE.BoxGeometry(5, 2, 2.4), bodyMat);
-  const tail = new THREE.Mesh(new THREE.BoxGeometry(5, 0.8, 0.8), bodyMat);
-  tail.position.set(-4.5, 0.4, 0);
-  const glass = new THREE.Mesh(
-    new THREE.BoxGeometry(1.6, 1.2, 2.2),
-    new THREE.MeshLambertMaterial({ color: 0x9fd0e8 }),
+function heliMesh() {
+  const g = new THREE.Group();
+  const bodyMat = new THREE.MeshStandardMaterial({ color: 0x222831, roughness: 0.5, metalness: 0.4 });
+  const body = new THREE.Mesh(new THREE.BoxGeometry(4.2, 1.6, 1.8), bodyMat);
+  body.position.y = 0;
+  body.castShadow = true;
+  g.add(body);
+  const tail = new THREE.Mesh(new THREE.BoxGeometry(3.4, 0.7, 0.7), bodyMat);
+  tail.position.set(-3.4, 0.3, 0);
+  g.add(tail);
+  const glass = new THREE.Mesh(new THREE.BoxGeometry(1.4, 1.0, 1.7), new THREE.MeshStandardMaterial({ color: 0x19e3ff, roughness: 0.1, metalness: 0.6 }));
+  glass.position.set(1.8, 0.2, 0);
+  g.add(glass);
+  const rotor = new THREE.Mesh(new THREE.BoxGeometry(9, 0.08, 0.5), new THREE.MeshStandardMaterial({ color: 0x111111 }));
+  rotor.position.y = 1.1;
+  g.add(rotor);
+  const spot = new THREE.Mesh(
+    new THREE.ConeGeometry(6, 30, 12, 1, true),
+    new THREE.MeshBasicMaterial({ color: 0xfff6c8, transparent: true, opacity: 0.14, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide }),
   );
-  glass.position.set(2.2, -0.2, 0);
-  const rotor = new THREE.Mesh(new THREE.BoxGeometry(11, 0.12, 0.5), new THREE.MeshLambertMaterial({ color: 0x222222 }));
-  rotor.position.y = 1.4;
-  group.add(body, tail, glass, rotor);
-  group.position.set(p.x + 34, 42, p.z);
-  state.scene.add(group);
-  // Searchlight cone (apex at the heli, wide end on the ground) + pool.
-  const cone = new THREE.Mesh(
-    new THREE.ConeGeometry(6, 12, 12, 1, true),
-    new THREE.MeshBasicMaterial({ color: 0xfff2b0, transparent: true, opacity: 0.16, side: THREE.DoubleSide, depthWrite: false }),
-  );
-  state.scene.add(cone);
-  const pool = new THREE.Mesh(
-    new THREE.CircleGeometry(5, 24),
-    new THREE.MeshBasicMaterial({ color: 0xfff2b0, transparent: true, opacity: 0.16, depthWrite: false }),
-  );
-  pool.rotation.x = -Math.PI / 2;
-  pool.position.set(p.x, 0.06, p.z);
-  state.scene.add(pool);
-  return { group, rotor, cone, pool, angle: 0 };
+  spot.position.y = -15;
+  spot.rotation.x = Math.PI;
+  g.add(spot);
+  g.userData.rotor = rotor;
+  return g;
 }
 
-function spawnFootCop(state) {
-  const p = state.player;
-  const angle = Math.random() * Math.PI * 2;
-  const cop = {
-    x: p.x + Math.cos(angle) * 25,
-    z: p.z + Math.sin(angle) * 25,
-    heading: 0, hp: 60, alive: true, phase: 0,
-    mesh: createPedMesh(0x1a3a8a),
-  };
-  // Navy uniform + cap: reuse the ped mesh, tinted dark blue.
-  cop.mesh.position.set(cop.x, 0, cop.z);
-  state.scene.add(cop.mesh);
-  state.cops.push(cop);
-}
+export class Police {
+  constructor(scene, rng, city, vehicles) {
+    this.scene = scene;
+    this.rng = rng;
+    this.city = city;
+    this.vehicles = vehicles;
+    this.cars = []; // police cars: {mesh, x, z, yaw, speed, mode, standoffT, ramCooldown}
+    this.cops = []; // foot cops: {fig, x, z, yaw, phase, touchT}
+    this.heli = null;
+    this.spawnT = 0;
+    this.copSpawnT = 0;
+    this.ramAllowedAt = 0; // no ramming before this sim time
+    this.noWantedT = 0;
+  }
 
-export function stepPolice(state, dt) {
-  const p = state.player;
-  const px = p.onFoot ? p.x : p.car.x;
-  const pz = p.onFoot ? p.z : p.car.z;
-  // Helicopter at 4+ stars: circles the player, searchlight pinned on him.
-  const stars = wantedStars(state.wantedHeat);
-  if (stars >= 4 && !state.heli) state.heli = spawnHeli(state);
-  if (stars < 4 && state.heli) {
-    state.scene.remove(state.heli.group);
-    state.scene.remove(state.heli.pool);
-    state.heli = null;
+  // Called whenever the player punches someone: police hold off ramming.
+  onPunch(now) {
+    this.ramAllowedAt = Math.max(
+      this.ramAllowedAt,
+      now + WANTED.punchGraceSec + WANTED.punchStandoffExtra,
+    );
+    for (const c of this.cars) {
+      if (c.mode === 'RAM') { c.mode = 'STANDOFF'; c.standoffT = 0; }
+    }
   }
-  if (state.heli) {
-    const h = state.heli;
-    h.angle += dt * 0.45;
-    h.group.position.set(px + Math.cos(h.angle) * 34, 42, pz + Math.sin(h.angle) * 34);
-    h.group.rotation.y = -h.angle;
-    h.rotor.rotation.y += dt * 22;
-    // Searchlight cone from the heli down to the player.
-    const top = h.group.position;
-    const dir = new THREE.Vector3(px - top.x, -top.y, pz - top.z);
-    const dist = dir.length();
-    dir.normalize();
-    h.cone.position.set((top.x + px) / 2, top.y / 2, (top.z + pz) / 2);
-    h.cone.quaternion.setFromUnitVectors(new THREE.Vector3(0, -1, 0), dir);
-    h.cone.scale.set(1, dist / 12, 1);
-    h.pool.position.set(px, 0.06, pz);
-    h.pool.material.opacity = 0.16 + Math.sin(state.time * 6) * 0.05;
+
+  desiredCars(wanted) {
+    if (wanted <= 0) return 0;
+    return Math.min(1 + Math.floor(wanted / 2), 4);
   }
-  // Patrol cars steer at the player and ram. In staged screenshot mode
-  // they just cruise straight, so the shot shows a pursuit, not a pile-up.
-  for (const car of state.policeCars) {
-    const dx = px - car.x;
-    const dz = pz - car.z;
-    const d = Math.hypot(dx, dz) || 1;
-    if (state.input.shotMode) {
-      car.x += Math.sin(car.heading) * car.speed * dt;
-      car.z += Math.cos(car.heading) * car.speed * dt;
-      syncCarMesh(car, dt);
-      const barMat0 = car.mesh.userData.barMat;
-      if (barMat0) {
-        const phase0 = Math.floor(state.time * 3 + (car.mesh.userData.barT || 0) * 2) % 2;
-        barMat0.color.setHex(phase0 === 0 ? 0xff2222 : 0x2266ff);
+
+  desiredCops(wanted) {
+    if (wanted < 2) return 0;
+    return Math.min(wanted, 4);
+  }
+
+  spawnCar(px, pz, now) {
+    // Spawn on a road 45–60 m from the player, facing roughly at them.
+    const road = this.rng.next() < 0.5 ? { axis: 'x', line: this.rng.pick(ROADS_X) } : { axis: 'z', line: this.rng.pick(ROADS_Z) };
+    let x;
+    let z;
+    let tries = 0;
+    do {
+      if (road.axis === 'x') { x = road.line + (this.rng.next() < 0.5 ? 2.2 : -2.2); z = this.rng.range(-160, 200); }
+      else { z = road.line + (this.rng.next() < 0.5 ? 2.2 : -2.2); x = this.rng.range(-160, 200); }
+      tries++;
+    } while (Math.hypot(x - px, z - pz) < 40 && tries < 12);
+    const mesh = policeCarMesh();
+    mesh.position.set(x, 0, z);
+    this.scene.add(mesh);
+    const car = {
+      mesh, x, z, yaw: Math.atan2(px - x, pz - z), speed: 0,
+      mode: 'APPROACH', standoffT: 0, ramCooldown: 0,
+    };
+    this.cars.push(car);
+    return car;
+  }
+
+  spawnCop(px, pz) {
+    const a = this.rng.next() * Math.PI * 2;
+    const x = px + Math.cos(a) * 26;
+    const z = pz + Math.sin(a) * 26;
+    const fig = buildAvatar({ shirt: 0x1a2a4a, pants: 0x1a1a1a, skin: 0xc98e6a, hair: 0x1a1a1a, face: 4 });
+    const hat = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.1, 0.4), new THREE.MeshStandardMaterial({ color: 0x1a2a4a }));
+    hat.position.set(0, 0.36, 0);
+    fig.head.add(hat);
+    this.scene.add(fig.group);
+    const cop = { fig, x, z, yaw: 0, phase: this.rng.next() * 6, touchT: 0, health: 100, staggerT: 0 };
+    this.cops.push(cop);
+    return cop;
+  }
+
+  spawnHeli(px, pz) {
+    const mesh = heliMesh();
+    mesh.position.set(px + 30, 46, pz - 20);
+    this.scene.add(mesh);
+    this.heli = { mesh, angle: 0 };
+  }
+
+  removeCar(car) {
+    this.scene.remove(car.mesh);
+    this.cars.splice(this.cars.indexOf(car), 1);
+  }
+
+  removeCop(cop) {
+    this.scene.remove(cop.fig.group);
+    this.cops.splice(this.cops.indexOf(cop), 1);
+  }
+
+  update(dt, ctx) {
+    const now = ctx.time;
+    const p = ctx.player;
+    const wanted = ctx.state.wanted;
+    // Spawning.
+    this.spawnT -= dt;
+    if (this.cars.length < this.desiredCars(wanted) && this.spawnT <= 0) {
+      this.spawnCar(p.x, p.z, now);
+      this.spawnT = 1.6;
+    }
+    this.copSpawnT -= dt;
+    if (this.cops.length < this.desiredCops(wanted) && this.copSpawnT <= 0) {
+      this.spawnCop(p.x, p.z);
+      this.copSpawnT = 1.8;
+    }
+    if (wanted >= 4 && !this.heli) this.spawnHeli(p.x, p.z);
+    if (wanted < 4 && this.heli) {
+      this.scene.remove(this.heli.mesh);
+      this.heli = null;
+    }
+    // Stand down when the heat is gone.
+    if (wanted === 0) {
+      this.noWantedT += dt;
+      if (this.noWantedT > 12) {
+        for (const c of [...this.cars]) this.removeCar(c);
+        for (const c of [...this.cops]) this.removeCop(c);
+        this.noWantedT = 0;
       }
-      continue;
-    }
-    const wantHeading = Math.atan2(dx, dz);
-    let diff = wantHeading - car.heading;
-    while (diff > Math.PI) diff -= Math.PI * 2;
-    while (diff < -Math.PI) diff += Math.PI * 2;
-    car.heading += Math.max(-2.2 * dt, Math.min(2.2 * dt, diff));
-    car.speed = Math.min(CFG.copCarSpeed, car.speed + 12 * dt);
-    car.x += Math.sin(car.heading) * car.speed * dt;
-    car.z += Math.cos(car.heading) * car.speed * dt;
-    state.city.collideCircle(car, CFG.carRadius);
-    if (d < 3.2) {
-      // Ram: shove the player's car, or hurt Jace on foot.
-      if (p.onFoot) {
-        p.hp -= 25 * dt * 4;
-        state.fx.addShake(0.3);
-        state.fx.burst(p.x, 1.2, p.z, 0xff4444, 6, 5);
-      } else {
-        p.car.speed *= 0.92;
-        p.car.x += (dx / d) * 1.2 * dt * 10;
-        p.car.z += (dz / d) * 1.2 * dt * 10;
-        state.fx.addShake(0.35);
-        state.audio.crash();
-      }
-      car.speed *= 0.5;
-    }
-    syncCarMesh(car, dt);
-    // Flashing light bar: red / blue, alternating.
-    const barMat = car.mesh.userData.barMat;
-    if (barMat) {
-      const phase = Math.floor(state.time * 3 + (car.mesh.userData.barT || 0) * 2) % 2;
-      barMat.color.setHex(phase === 0 ? 0xff2222 : 0x2266ff);
-    }
-  }
-  // Foot cops run at Jace; touching him on foot busts him.
-  for (const cop of state.cops) {
-    if (!cop.alive) continue;
-    const dx = p.x - cop.x;
-    const dz = p.z - cop.z;
-    const d = Math.hypot(dx, dz) || 1;
-    if (p.onFoot && d < 1.6) {
-      state.bust();
-      return;
-    }
-    if (p.onFoot) {
-      cop.x += (dx / d) * CFG.copRunSpeed * dt;
-      cop.z += (dz / d) * CFG.copRunSpeed * dt;
-      cop.heading = Math.atan2(dx, dz);
-      cop.phase += dt * 10;
     } else {
-      // Player in a car: cops give up and hold position.
+      this.noWantedT = 0;
     }
-    cop.mesh.position.set(cop.x, 0, cop.z);
-    cop.mesh.rotation.y = cop.heading;
-    const swing = p.onFoot ? Math.sin(cop.phase) * 0.5 : 0;
-    cop.mesh.userData.legs[0].rotation.x = swing;
-    cop.mesh.userData.legs[1].rotation.x = -swing;
+
+    const px = p.x;
+    const pz = p.z;
+    const canRam = now > this.ramAllowedAt;
+    // --- Police cars ------------------------------------------------------
+    for (const c of [...this.cars]) {
+      const dx = px - c.x;
+      const dz = pz - c.z;
+      const dist = Math.hypot(dx, dz) || 0.001;
+      const targetYaw = Math.atan2(dx, dz);
+      let dy = targetYaw - c.yaw;
+      while (dy > Math.PI) dy -= Math.PI * 2;
+      while (dy < -Math.PI) dy += Math.PI * 2;
+      if (c.ramCooldown > 0) c.ramCooldown -= dt;
+      if (c.mode === 'APPROACH') {
+        c.speed = Math.min(c.speed + 16 * dt, 26);
+        c.yaw += THREE.MathUtils.clamp(dy, -2.2 * dt, 2.2 * dt);
+        if (dist < 18) { c.mode = 'STANDOFF'; c.standoffT = 0; }
+      } else if (c.mode === 'STANDOFF') {
+        c.standoffT += dt;
+        // Circle the player at 12–18 m, keeping a respectful distance.
+        const orbitYaw = targetYaw + Math.PI / 2 + 0.6;
+        let ody = orbitYaw - c.yaw;
+        while (ody > Math.PI) ody -= Math.PI * 2;
+        while (ody < -Math.PI) ody += Math.PI * 2;
+        c.yaw += THREE.MathUtils.clamp(ody, -1.8 * dt, 1.8 * dt);
+        c.speed = dist > 18 ? 12 : dist < 12 ? 8 : 10;
+        const ramOk = canRam && c.standoffT > WANTED.ramStandoffSec && c.ramCooldown <= 0;
+        const highWantedRam = wanted >= WANTED.ramMinStars && c.standoffT > WANTED.ramStandoffSec && c.ramCooldown <= 0;
+        if (ramOk || highWantedRam) { c.mode = 'RAM'; }
+      } else { // RAM
+        c.speed = Math.min(c.speed + 22 * dt, 34);
+        c.yaw += THREE.MathUtils.clamp(dy, -2.6 * dt, 2.6 * dt);
+        if (dist < 3.2) {
+          // Impact: shove the player (or their car) and back off.
+          ctx.onRam(c);
+          c.mode = 'STANDOFF';
+          c.standoffT = 0;
+          c.ramCooldown = 6;
+          c.speed = 6;
+        }
+        if (dist > 26) { c.mode = 'STANDOFF'; c.standoffT = 0; }
+      }
+      c.x += Math.sin(c.yaw) * c.speed * dt;
+      c.z += Math.cos(c.yaw) * c.speed * dt;
+      const fixed = collideCircle(c.x, c.z, 1.7, this.city.colliders);
+      const land = clampToLand(fixed.x, fixed.z);
+      c.x = land.x;
+      c.z = land.z;
+      c.mesh.position.set(c.x, 0, c.z);
+      c.mesh.rotation.y = c.yaw;
+      // Light bar flashes red/blue.
+      const on = Math.sin(now * 9) > 0;
+      c.mesh.userData.barMat.emissiveIntensity = on ? 2.2 : 0.2;
+      c.mesh.userData.bar2Mat.emissiveIntensity = on ? 0.2 : 2.2;
+      if (c.mesh.userData.headMat) c.mesh.userData.headMat.emissiveIntensity = ctx.daynight && ctx.daynight.isNight ? 1.6 : 0.15;
+    }
+
+    // --- Foot cops ---------------------------------------------------------
+    for (const cop of [...this.cops]) {
+      if (cop.staggerT > 0) cop.staggerT = Math.max(0, cop.staggerT - dt);
+      const dx = px - cop.x;
+      const dz = pz - cop.z;
+      const dist = Math.hypot(dx, dz) || 0.001;
+      cop.yaw = Math.atan2(dx, dz);
+      if (cop.staggerT <= 0) {
+        const sp = 5.4;
+        cop.x += (dx / dist) * sp * dt;
+        cop.z += (dz / dist) * sp * dt;
+        cop.phase += dt * sp * 2.2;
+        poseWalk(cop.fig, cop.phase, 0.9, 0.14);
+      }
+      const fixed = collideCircle(cop.x, cop.z, 0.5, this.city.colliders);
+      cop.x = fixed.x;
+      cop.z = fixed.z;
+      cop.fig.group.position.set(cop.x, 0, cop.z);
+      cop.fig.group.rotation.y = cop.yaw;
+      // Close enough for long enough: BUSTED.
+      if (dist < 1.3 && p.onFoot) {
+        cop.touchT += dt;
+        if (cop.touchT > 1.0) ctx.onBust();
+      } else {
+        cop.touchT = 0;
+      }
+    }
+
+    // --- Helicopter: slow orbit, spotlight on the player -------------------
+    if (this.heli) {
+      const h = this.heli;
+      h.angle += dt * 0.35;
+      const hx = px + Math.cos(h.angle) * 30;
+      const hz = pz + Math.sin(h.angle) * 30;
+      h.mesh.position.set(hx, 36 + Math.sin(now * 0.8) * 1.5, hz);
+      h.mesh.lookAt(px, 0, pz);
+      h.mesh.userData.rotor.rotation.y += dt * 28;
+    }
   }
 }

@@ -1,403 +1,49 @@
-// SUNPORT — boot and the one game loop.
-// The world advances in fixed 1/60 s steps and the renderer only paints
-// what is there. Phases: menu, play, pause, busted, wasted. The loop owns
-// the cross-module glue: entering and leaving cars, firing, wanted decay,
-// mission progress, busted/wasted respawns, autosave and the HUD tick.
+// SUNPORT v2 — bootstrap and game loop. Wires every system together:
+// renderer + camera, city, day/night, HUD, input, player, pedestrians,
+// vehicles, police, combat, missions, save, touch and the ?shot= scenes.
+// Exposes window.__sunport for debugging and for the headless playtests.
+
 import * as THREE from 'three';
-import { CFG } from './config.js';
-import { makeRng } from './rng.js';
-import { buildCity, LANDMARKS } from './city.js';
-import { createPlayer, createPlayerMesh, stepPlayerOnFoot, updateCamera } from './player.js';
-import { spawnTraffic, spawnParked, stepTraffic, stepPlayerCar, nearestCar, syncCarMesh } from './vehicles.js';
-import { spawnPedestrians, stepPedestrians, scarePeds } from './pedestrians.js';
-import { updateWanted, stepPolice, addWanted, wantedStars } from './police.js';
-import { createPickups, stepPickups, playerShoot, playerPunch, startReload, updateReload } from './combat.js';
-import { startMission, updateMission, failMission, missionState } from './missions.js';
-import { createHud, updateHud } from './hud.js';
+import { RNG } from './rng.js';
+import { WORLD, WANTED, clamp, lerp } from './config.js';
 import { AudioSys } from './audio.js';
-import { createEffects } from './effects.js';
-import { createInput } from './input.js';
-import { createTouchControls } from './touch.js';
-import { createDayNight } from './daynight.js';
-import { saveGame, loadGame, hasSave } from './save.js';
-import { stageShot } from './shots.js';
+import { Effects } from './effects.js';
+import { buildCity } from './city.js';
+import { DayNight } from './daynight.js';
+import { HUD } from './hud.js';
+import { Input } from './input.js';
+import { Player } from './player.js';
+import { Pedestrians } from './pedestrians.js';
+import { Vehicles } from './vehicles.js';
+import { Police } from './police.js';
+import { Combat } from './combat.js';
+import { Missions } from './missions.js';
+import { saveGame, loadGame } from './save.js';
+import { TouchUI } from './touch.js';
+import { applyShot } from './shots.js';
 
-const STEP = 1 / 60;
-const params = new URLSearchParams(window.location.search);
-const SEED = Number(params.get('seed') || 1);
-const SHOT = params.get('shot');
+const params = new URLSearchParams(location.search);
+const seed = Number(params.get('seed') || 1);
+const shot = params.get('shot');
+const rng = new RNG(seed);
 
-// ---- renderer, scene, camera -------------------------------------------
+// --- Renderer / scene / camera --------------------------------------------
 const container = document.getElementById('game');
-const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: "high-performance" });
+const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
 renderer.setSize(window.innerWidth, window.innerHeight);
-renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = 1.05;
 container.appendChild(renderer.domElement);
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x87c5eb);
-scene.fog = new THREE.Fog(0x87c5eb, 180, 420);
-const camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.1, 600);
-scene.add(camera);
+scene.fog = new THREE.Fog(0x9fc4de, 90, 420);
 
-const sun = new THREE.DirectionalLight(0xfff2d0, 2.2);
-sun.position.set(120, 180, 60);
-scene.add(sun);
-const hemi = new THREE.HemisphereLight(0xbfd8ff, 0x8a9a7a, 0.9);
-scene.add(hemi);
-const amb = new THREE.AmbientLight(0xffffff, 0.5);
-scene.add(amb);
-const daynight = createDayNight(scene, { sun, hemi, amb });
-daynight.setHours(17.6); // golden hour by default
-if (SHOT) daynight.frozen = true; // staged shots keep their exact light
-
-// ---- state --------------------------------------------------------------
-const rng = makeRng(SEED);
-const city = buildCity(scene, rng);
-const state = {
-  seed: SEED, rng, scene, camera, city,
-  time: 0, phase: 'menu', menuOrbit: false,
-  player: createPlayer(),
-  traffic: spawnTraffic(scene, rng, city),
-  parked: spawnParked(scene, rng, city),
-  peds: spawnPedestrians(scene, rng),
-  cops: [], policeCars: [],
-  pickups: createPickups(scene),
-  wantedHeat: 0, wanted: 0,
-  heli: null,
-  dialogue: '', dialogT: 0,
-  missionIdx: 0, missionStep: 0, missionTimer: 0, missionsDone: [],
-  banner: null, bannerT: 0, hint: '', dmgFlash: 0,
-  audio: new AudioSys(),
-  fx: createEffects(scene),
-  daynight,
-  saveT: 0, autosaveT: 0, shotReadyAt: 0,
-};
-state.player.mesh = createPlayerMesh();
-scene.add(state.player.mesh);
-state.hud = createHud();
-state.input = createInput(renderer.domElement, () => {
-  if (state.phase === 'menu') newGame();
-});
-state.touch = createTouchControls(state.input); // null on desktop
-state.spawnTracer = spawnTracer;
-
-// ---- tracer pool ---------------------------------------------------------
-const TRACER_MAX = 16;
-const tracers = [];
-for (let i = 0; i < TRACER_MAX; i += 1) {
-  const geo = new THREE.BufferGeometry();
-  geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(6), 3));
-  const line = new THREE.Line(geo, new THREE.LineBasicMaterial({ color: 0xffe9a8, transparent: true, opacity: 0 }));
-  line.visible = false;
-  line.frustumCulled = false;
-  scene.add(line);
-  tracers.push({ line, t: 0 });
-}
-let tracerIdx = 0;
-function spawnTracer(from, to) {
-  const tr = tracers[tracerIdx];
-  tracerIdx = (tracerIdx + 1) % TRACER_MAX;
-  const pos = tr.line.geometry.attributes.position.array;
-  pos[0] = from.x; pos[1] = from.y; pos[2] = from.z;
-  pos[3] = to.x; pos[4] = to.y; pos[5] = to.z;
-  tr.line.geometry.attributes.position.needsUpdate = true;
-  tr.line.material.opacity = 0.9;
-  tr.line.visible = true;
-  tr.t = 0.07;
-}
-
-// ---- menu ---------------------------------------------------------------
-function showMenu() {
-  state.phase = 'menu';
-  document.getElementById('menu').hidden = false;
-  document.getElementById('hud').hidden = true;
-  document.getElementById('pause').hidden = true;
-  document.getElementById('endcard').hidden = true;
-  document.getElementById('continue-btn').disabled = !hasSave();
-  document.exitPointerLock?.();
-}
-
-function newGame() {
-  const p = state.player;
-  p.money = CFG.startMoney; p.hp = CFG.playerHp;
-  p.hasPistol = false; p.mag = 0; p.reserve = 0; p.weapon = 'fists';
-  p.x = -20; p.z = 20; p.y = 0; p.onFoot = true; p.car = null;
-  p.mesh.visible = true;
-  state.wantedHeat = 0;
-  state.missionsDone = [];
-  state.phase = 'play';
-  document.getElementById('menu').hidden = true;
-  document.getElementById('hud').hidden = false;
-  state.audio.ensure();
-  startMission(state, 0);
-  saveGame(state);
-}
-
-function continueGame() {
-  const d = loadGame();
-  if (!d) return;
-  const p = state.player;
-  p.money = d.money; p.hp = d.hp;
-  p.hasPistol = d.hasPistol; p.mag = d.mag; p.reserve = d.reserve;
-  p.weapon = d.hasPistol ? 'pistol' : 'fists';
-  p.x = d.x; p.z = d.z; p.y = 0; p.onFoot = true; p.car = null;
-  p.mesh.visible = true;
-  state.missionsDone = d.completed || [];
-  state.wantedHeat = 0;
-  state.phase = 'play';
-  document.getElementById('menu').hidden = true;
-  document.getElementById('hud').hidden = false;
-  state.audio.ensure();
-  startMission(state, Math.min(d.missionIdx, 3));
-  state.missionStep = d.missionStep || 0;
-}
-
-document.getElementById('new-btn').addEventListener('click', newGame);
-document.getElementById('continue-btn').addEventListener('click', continueGame);
-document.getElementById('save-btn').addEventListener('click', () => {
-  saveGame(state);
-  state.hint = 'Game saved';
-});
-document.getElementById('resume-btn').addEventListener('click', () => {
-  state.phase = 'play';
-  document.getElementById('pause').hidden = true;
-});
-document.getElementById('quit-btn').addEventListener('click', showMenu);
-document.getElementById('end-btn').addEventListener('click', showMenu);
-document.getElementById('help-btn').addEventListener('click', () => {
-  document.getElementById('help').hidden = !document.getElementById('help').hidden;
-});
-
-// ---- busted / wasted -----------------------------------------------------
-state.bust = function bust() {
-  if (state.phase !== 'play') return;
-  state.phase = 'busted';
-  state.audio.busted();
-  failMission(state, 'Busted by the Sunport PD');
-  showEnd('BUSTED', 'The Sunport PD caught you. You spend the night in a cell and lose your ride.');
-  respawnAfter();
-};
-state.wasted = function wasted() {
-  if (state.phase !== 'play') return;
-  state.phase = 'wasted';
-  state.audio.busted();
-  failMission(state, 'Wasted');
-  showEnd('WASTED', 'You wake up at Sunport General. The hospital bill stings.');
-  respawnAfter();
-};
-function showEnd(title, sub) {
-  document.getElementById('end-title').textContent = title;
-  document.getElementById('end-sub').textContent = sub;
-  document.getElementById('endcard').hidden = false;
-  document.exitPointerLock?.();
-}
-function respawnAfter() {
-  const p = state.player;
-  // Leave the car where it was; Jace wakes at the hospital, fined.
-  if (p.car) { p.car = null; p.onFoot = true; }
-  p.money = Math.max(0, p.money - CFG.hospitalFine);
-  p.hp = CFG.playerHp;
-  p.x = LANDMARKS.hospital.x + 8; p.z = LANDMARKS.hospital.z + 8; p.y = 0;
-  p.mesh.visible = true;
-  p.mesh.position.set(p.x, 0, p.z);
-  state.wantedHeat = 0;
-  for (const c of state.policeCars) scene.remove(c.mesh);
-  state.policeCars = [];
-  for (const c of state.cops) scene.remove(c.mesh);
-  state.cops = [];
-  if (state.heli) {
-    scene.remove(state.heli.group);
-    scene.remove(state.heli.cone);
-    scene.remove(state.heli.pool);
-    state.heli = null;
-  }
-  saveGame(state);
-}
-
-// ---- cars: enter / exit ---------------------------------------------------
-function tryEnterCar() {
-  const p = state.player;
-  if (!p.onFoot) {
-    // Exit: step out beside the car.
-    const car = p.car;
-    p.x = car.x + Math.sin(car.heading + Math.PI / 2) * 3;
-    p.z = car.z + Math.cos(car.heading + Math.PI / 2) * 3;
-    p.y = 0;
-    p.onFoot = true;
-    p.car = null;
-    p.mesh.visible = true;
-    p.mesh.position.set(p.x, 0, p.z);
-    state.hint = '';
-    return;
-  }
-  const car = nearestCar([...state.parked, ...state.traffic], p.x, p.z, 5.5);
-  if (!car) return;
-  const stolen = car.kind === 'parked' || car.kind === 'traffic';
-  if (stolen) {
-    addWanted(state, CFG.wantedPerSteal);
-    state.hint = 'Car stolen — the cops noticed!';
-    state.audio.pickup();
-    if (car.kind === 'traffic') {
-      state.traffic = state.traffic.filter((c) => c !== car);
-    } else {
-      state.parked = state.parked.filter((c) => c !== car);
-    }
-  }
-  car.kind = 'player';
-  car.speed = 0;
-  p.onFoot = false;
-  p.car = car;
-  p.mesh.visible = false;
-}
-
-// ---- fixed step -----------------------------------------------------------
-function step(dt) {
-  state.time += dt;
-  const p = state.player;
-  const input = state.input;
-
-  if (state.phase === 'menu') {
-    // Slow orbit over Palmera Boulevard and the beach for the title
-    // screen: high enough to clear the downtown towers, looking east.
-    const a = state.time * 0.05;
-    camera.position.set(100 + Math.sin(a) * 110, 65, Math.cos(a) * 110);
-    camera.lookAt(140, 0, 0);
-    stepTraffic(state.traffic, dt, city);
-    city.update(dt);
-    return;
-  }
-  if (state.phase !== 'play') {
-    // Drop stale one-shot presses so they never fire after unpausing.
-    input.pressed.clear();
-    return;
-  }
-
-  // One-shot keys.
-  if (input.pressed.has('pause')) {
-    state.phase = 'pause';
-    document.getElementById('pause').hidden = false;
-    document.exitPointerLock?.();
-  }
-  if (input.pressed.has('mute')) {
-    state.audio.setMuted(!state.audio.muted);
-    state.hint = state.audio.muted ? 'Sound muted (M)' : 'Sound on (M)';
-  }
-  if (input.pressed.has('help')) {
-    document.getElementById('help').hidden = !document.getElementById('help').hidden;
-  }
-  if (input.pressed.has('enterCar')) tryEnterCar();
-  if (input.pressed.has('punch') && p.onFoot) playerPunch(state);
-  if (input.pressed.has('reload')) startReload(state);
-  input.pressed.clear();
-
-  // Movement.
-  if (p.onFoot) {
-    stepPlayerOnFoot(p, input, dt, city);
-  } else {
-    const look = input.consumeLook();
-    p.car.heading += look.dx * 0.0012;
-    stepPlayerCar(p.car, input, dt, city, state.fx, state.audio);
-    p.x = p.car.x; p.z = p.car.z;
-    p.camYaw = p.car.heading + Math.PI;
-  }
-  updateReload(state, dt);
-
-  // Shooting: hold to fire, 4 shots a second.
-  state.saveT += dt;
-  if (input.firing && p.onFoot && p.weapon === 'pistol' && p.hasPistol) {
-    if (state.saveT >= 0.25) {
-      state.saveT = 0;
-      playerShoot(state);
-    }
-  }
-
-  // World life.
-  stepTraffic(state.traffic, dt, city);
-  stepPedestrians(state.peds, dt, city, p);
-  stepPickups(state, dt);
-  updateWanted(state, dt);
-  stepPolice(state, dt);
-  city.update(dt);
-  daynight.update(dt);
-
-  // Mission progress.
-  const res = updateMission(state, dt);
-  if (res === 'done') saveGame(state);
-
-  // Player damage / death.
-  if (p.hp <= 0) {
-    state.wasted();
-    return;
-  }
-  // On-foot collision with traffic hurts.
-  if (p.onFoot) {
-    for (const car of [...state.traffic, ...state.policeCars]) {
-      if (Math.hypot(car.x - p.x, car.z - p.z) < 2.2 && Math.abs(car.speed) > 3) {
-        p.hp -= 30 * dt * 3;
-        state.dmgFlash = 0.6;
-        state.fx.addShake(0.3);
-        scarePeds(state.peds, p.x, p.z, 20);
-      }
-    }
-  }
-  if (state.dmgFlash > 0) state.dmgFlash -= dt * 1.5;
-  if (state.bannerT > 0) state.bannerT -= dt;
-
-  // Tracers fade.
-  for (const tr of tracers) {
-    if (!tr.line.visible) continue;
-    tr.t -= dt;
-    tr.line.material.opacity = Math.max(0, tr.t / 0.07) * 0.9;
-    if (tr.t <= 0) tr.line.visible = false;
-  }
-  state.fx.update(dt);
-
-  // Audio follows the game.
-  const driving = !p.onFoot;
-  state.audio.setEngine(driving ? Math.abs(p.car.speed) / CFG.carMaxSpeed : 0, driving);
-  state.audio.setSiren(state.wanted > 0, state.time);
-  state.audio.updateMusic(dt, state.phase === 'play');
-
-  // Autosave every 15 s.
-  state.autosaveT += dt;
-  if (state.autosaveT > 15) {
-    state.autosaveT = 0;
-    saveGame(state);
-  }
-}
-
-// ---- render ---------------------------------------------------------------
-function render() {
-  if (state.phase !== 'menu') {
-    updateCamera(state.player, camera, 0, state.fx);
-  }
-  renderer.render(scene, camera);
-}
-
-// ---- main loop ------------------------------------------------------------
-let last = performance.now();
-let acc = 0;
-let frames = 0;
-function loop(now) {
-  requestAnimationFrame(loop);
-  const dt = Math.min(0.1, (now - last) / 1000);
-  last = now;
-  acc += dt;
-  let n = 0;
-  while (acc >= STEP && n < 5) {
-    step(STEP);
-    acc -= STEP;
-    n += 1;
-  }
-  if (n === 5) acc = 0;
-  render();
-  if (state.phase !== 'menu') updateHud(state, state.hud);
-  frames += 1;
-  if (SHOT && !window.__shotReady && frames >= 3 && state.time > 0.4) window.__shotReady = true;
-}
+const camera = new THREE.PerspectiveCamera(62, window.innerWidth / window.innerHeight, 0.1, 900);
+camera.position.set(160, 14, 60);
 
 window.addEventListener('resize', () => {
   camera.aspect = window.innerWidth / window.innerHeight;
@@ -405,29 +51,436 @@ window.addEventListener('resize', () => {
   renderer.setSize(window.innerWidth, window.innerHeight);
 });
 
-// ---- shot modes -----------------------------------------------------------
-if (SHOT) {
-  stageShot(state, SHOT);
-} else {
-  showMenu();
+// --- Systems ---------------------------------------------------------------
+const audio = new AudioSys();
+const effects = new Effects(scene);
+const city = buildCity(scene, rng);
+const daynight = new DayNight(scene, city, renderer);
+const hud = new HUD();
+const input = new Input();
+input.attach();
+const player = new Player(scene);
+player.reset(city.spawn.x, city.spawn.z, city.spawn.yaw);
+const pedestrians = new Pedestrians(scene, rng, city);
+const vehicles = new Vehicles(scene, rng, city);
+const police = new Police(scene, rng, city, vehicles);
+const combat = new Combat(audio, effects);
+const missions = new Missions(scene, hud, audio);
+
+// --- Shared state (the debug contract) --------------------------------------
+const state = {
+  time: 0,
+  phase: 'menu', // menu | play | paused | busted | wasted
+  player,
+  parked: vehicles.parked,
+  wantedHeat: 0,
+  wanted: 0,
+  lastCrimeT: -100,
+  timeOfDay: daynight.t,
+  missionTarget: null,
+  policeCars: police.cars,
+  cops: police.cops,
+  heli: null,
+  onMissionComplete: null,
+  bust: () => doBust(),
+};
+Object.defineProperty(state, 'missionIdx', {
+  get: () => missions.idx,
+  set: (v) => { missions.idx = v; },
+  enumerable: true,
+});
+Object.defineProperty(state, 'missionStep', {
+  get: () => missions.step,
+  set: (v) => { missions.step = v; },
+  enumerable: true,
+});
+
+// --- Menu / pause / end wiring ----------------------------------------------
+const menuEl = document.getElementById('menu');
+const pauseEl = document.getElementById('pause');
+const endEl = document.getElementById('end');
+const btnNewGame = document.getElementById('btn-new-game');
+const btnContinue = document.getElementById('btn-continue');
+const btnControls = document.getElementById('btn-controls');
+const controlsEl = document.getElementById('controls');
+const btnResume = document.getElementById('btn-resume');
+const btnSave = document.getElementById('save-btn');
+const btnQuit = document.getElementById('btn-quit');
+const btnRetry = document.getElementById('end-retry');
+const btnMenu = document.getElementById('end-menu');
+
+function showOnly(el) {
+  for (const x of [menuEl, pauseEl, endEl]) if (x) x.hidden = true;
+  if (el) el.hidden = false;
 }
 
-// ---- debug hooks for headless verification --------------------------------
+function clearPolice() {
+  for (const c of [...police.cars]) police.removeCar(c);
+  for (const c of [...police.cops]) police.removeCop(c);
+  if (police.heli) { scene.remove(police.heli.mesh); police.heli = null; }
+}
+
+function newGame() {
+  audio.ensure();
+  audio.click();
+  input.clearPressed(); // menu keypresses must not leak into the new game
+  clearPolice();
+  player.reset(city.spawn.x, city.spawn.z, city.spawn.yaw);
+  player.money = 120;
+  player.hasPistol = false;
+  player.weapon = 'fists';
+  player.mag = 12;
+  player.reserve = 24;
+  state.wantedHeat = 0;
+  state.wanted = 0;
+  state.lastCrimeT = -100;
+  daynight.setTime(0.06);
+  missions.reset();
+  state.onMissionComplete = () => { saveGame(state); };
+  hud.hideEnd();
+  showOnly(null);
+  state.phase = 'play';
+  updateEnterLabel();
+}
+
+function continueGame() {
+  const save = loadGame();
+  audio.ensure();
+  audio.click();
+  input.clearPressed(); // menu keypresses must not leak into the game
+  if (!save) { newGame(); return; }
+  clearPolice();
+  player.reset(save.x ?? city.spawn.x, save.z ?? city.spawn.z, city.spawn.yaw);
+  player.money = save.money ?? 120;
+  player.health = save.health ?? 100;
+  state.wantedHeat = 0;
+  state.wanted = 0;
+  state.lastCrimeT = -100;
+  daynight.setTime(save.timeOfDay ?? 0.06);
+  missions.reset();
+  if (save.missionIdx > 0) missions.startMission(Math.min(3, save.missionIdx));
+  if (save.missionIdx >= 3) { player.hasPistol = true; }
+  state.onMissionComplete = () => { saveGame(state); };
+  hud.hideEnd();
+  showOnly(null);
+  state.phase = 'play';
+  updateEnterLabel();
+}
+
+function togglePause() {
+  input.clearPressed(); // the pause key itself + any stale presses stay out
+  if (state.phase === 'play') {
+    state.phase = 'paused';
+    showOnly(pauseEl);
+    audio.click();
+  } else if (state.phase === 'paused') {
+    state.phase = 'play';
+    showOnly(null);
+    audio.click();
+  }
+}
+
+function doBust() {
+  if (state.phase === 'busted') return;
+  state.phase = 'busted';
+  audio.busted();
+  audio.siren(false);
+  audio.engineOff();
+  hud.showEnd('BUSTED', 'Officer Kane menangkapmu. Uang hasil misi hangus setengah.');
+  player.money = Math.floor(player.money / 2);
+  showOnly(endEl);
+}
+
+function doWasted() {
+  if (state.phase === 'wasted') return;
+  state.phase = 'wasted';
+  audio.busted();
+  hud.showEnd('WASTED', 'Jace tumbang. Rumah sakit Sunport menagih $100.');
+  player.money = Math.max(0, player.money - 100);
+  showOnly(endEl);
+}
+
+btnNewGame.addEventListener('click', newGame);
+btnContinue.addEventListener('click', continueGame);
+btnControls.addEventListener('click', () => {
+  controlsEl.hidden = !controlsEl.hidden;
+  audio.ensure();
+  audio.click();
+});
+btnResume.addEventListener('click', togglePause);
+btnSave.addEventListener('click', () => {
+  audio.ensure();
+  const ok = saveGame(state);
+  btnSave.textContent = ok ? 'TERSIMPAN ✓' : 'GAGAL SIMPAN';
+  setTimeout(() => { btnSave.textContent = 'SIMPAN'; }, 1200);
+});
+btnQuit.addEventListener('click', () => {
+  saveGame(state);
+  state.phase = 'menu';
+  showOnly(menuEl);
+  refreshContinue();
+});
+btnRetry.addEventListener('click', newGame);
+btnMenu.addEventListener('click', () => {
+  state.phase = 'menu';
+  showOnly(menuEl);
+  refreshContinue();
+});
+
+function refreshContinue() {
+  const save = loadGame();
+  btnContinue.hidden = !save;
+  if (save) btnContinue.textContent = `LANJUTKAN — $${save.money} · Misi ${save.missionIdx + 1}`;
+}
+refreshContinue();
+
+// --- Touch controls ----------------------------------------------------------
+const touch = new TouchUI(input, {
+  onEnter: () => input.queue('KeyE'),
+  onPunch: () => input.queue('KeyF'),
+  onReload: () => input.queue('KeyR'),
+  onInteract: () => input.queue('KeyE'),
+  onPause: () => input.queue('KeyP'),
+  onFireStart: () => {},
+  onFireStop: () => {},
+});
+const touchActive = touch.attach();
+
+function updateEnterLabel() {
+  const el = document.getElementById('btn-enter');
+  if (!el) return;
+  const label = player.onFoot ? 'MASUK MOBIL' : 'KELUAR MOBIL';
+  if (el.textContent !== label) el.textContent = label;
+}
+
+// --- Car enter / exit ---------------------------------------------------------
+function tryEnterExitCar() {
+  if (player.onFoot) {
+    const car = vehicles.nearestCar(player.x, player.z, 3.5);
+    if (!car) return;
+    if (car.isParked && !car.stolen) {
+      car.stolen = true;
+      state.wantedHeat = Math.min(100, state.wantedHeat + WANTED.stealCar);
+      state.lastCrimeT = state.time;
+      hud.setHint('Mobil dicuri! Polisi waspada.');
+    }
+    if (car.isParked) car.isParked = false;
+    const ti = vehicles.traffic.indexOf(car);
+    if (ti >= 0) vehicles.traffic.splice(ti, 1);
+    car.isPlayer = true;
+    player.enterCar(car);
+    audio.click();
+  } else {
+    const car = player.car;
+    player.exitCar();
+    if (car) car.isPlayer = false;
+    audio.click();
+  }
+  updateEnterLabel();
+}
+
+// --- Shared per-frame context for the systems ----------------------------------
+function makeCtx() {
+  return {
+    time: state.time,
+    state,
+    player,
+    pedestrians,
+    police,
+    daynight,
+    camera,
+    colliders: city.colliders,
+    onRam: (car) => {
+      // A police ram: damage + shove + shake. On foot it knocks Jace down.
+      if (player.onFoot) {
+        player.takeDamage(12);
+        hud.flashDamage();
+        const dx = player.x - car.x;
+        const dz = player.z - car.z;
+        const l = Math.hypot(dx, dz) || 1;
+        player.x += (dx / l) * 2;
+        player.z += (dz / l) * 2;
+      } else if (player.car) {
+        player.car.speed *= 0.35;
+        player.takeDamage(6);
+        hud.flashDamage();
+      }
+      effects.shake(0.4);
+      audio.punch();
+    },
+    onBust: () => doBust(),
+    onShake: (amt) => effects.shake(amt),
+  };
+}
+
+// --- Camera -------------------------------------------------------------------
+let menuOrbit = 0;
+let fov = 62;
+function updateCamera(dt) {
+  if (state.phase === 'menu') {
+    menuOrbit += dt * 0.06;
+    const cx = 180 + Math.cos(menuOrbit) * 34;
+    const cz = 20 + Math.sin(menuOrbit) * 30;
+    camera.position.set(cx, 13 + Math.sin(menuOrbit * 0.7) * 2, cz);
+    camera.lookAt(186, 6, 10);
+    camera.fov = 58;
+    camera.updateProjectionMatrix();
+    return;
+  }
+  const p = player;
+  const dist = p.onFoot ? 7.5 : 11;
+  const height = p.onFoot ? 2.4 + p.camPitch * 2.2 : 3.4 + p.camPitch * 2.0;
+  const fx = Math.sin(p.camYaw);
+  const fz = Math.cos(p.camYaw);
+  const tx = p.x + fx * dist;
+  const tz = p.z + fz * dist;
+  camera.position.x = lerp(camera.position.x, tx, Math.min(1, dt * 10));
+  camera.position.y = lerp(camera.position.y, height, Math.min(1, dt * 10));
+  camera.position.z = lerp(camera.position.z, tz, Math.min(1, dt * 10));
+  if (camera.position.y < 0.6) camera.position.y = 0.6;
+  camera.lookAt(p.x - fx * 4 + effects.shakeX, 1.6 + effects.shakeY, p.z - fz * 4);
+  const targetFov = p.onFoot ? 62 : 62 + Math.min(12, Math.abs(p.car ? p.car.speed : 0) * 0.35);
+  fov = lerp(fov, targetFov, Math.min(1, dt * 4));
+  camera.fov = fov;
+  camera.updateProjectionMatrix();
+}
+
+// --- Hints ----------------------------------------------------------------------
+function updateHint() {
+  if (state.phase !== 'play') { hud.setHint(''); return; }
+  if (!player.onFoot) {
+    hud.setHint('W/S gas & rem · A/D setir · [Space] handbrake · [E] keluar mobil');
+  } else {
+    const car = vehicles.nearestCar(player.x, player.z, 3.5);
+    if (car) hud.setHint('[E] MASUK MOBIL');
+    else if (state.wanted > 0) hud.setHint('Polisi mengejarmu — tahan SHIFT / LARI untuk lari!');
+    else if (missions.idx === 2 && missions.step === 0) hud.setHint('Buat keributan: pukul (F) atau curi mobil');
+    else hud.setHint('WASD jalan · [F] pukul · [Space] lompat · [E] masuk mobil');
+  }
+}
+
+// --- Main loop -------------------------------------------------------------------
+const clock = new THREE.Clock();
+let shotReadySent = false;
+
+function loop() {
+  requestAnimationFrame(loop);
+  const dt = Math.min(clock.getDelta(), 0.05);
+  state.time += dt;
+  const ctx = makeCtx();
+
+  if (state.phase === 'play') {
+    // --- Input: edge-triggered actions ------------------------------------
+    if (input.consume('KeyE')) tryEnterExitCar();
+    if (input.consume('KeyF')) {
+      // Any punch — hit or whiff — makes the police hold off ramming.
+      if (combat.tryPunch(player)) police.onPunch(state.time);
+    }
+    if (input.consume('KeyR')) combat.startReload(player);
+    if (input.consume('Digit1')) player.weapon = 'fists';
+    if (input.consume('Digit2') && player.hasPistol) player.weapon = 'pistol';
+    if (input.consume('KeyP') || input.consume('Escape')) togglePause();
+    if (input.consume('KeyM')) audio.setMuted(!audio.muted);
+    // --- Player / car ------------------------------------------------------
+    if (player.onFoot) {
+      player.update(dt, input, ctx);
+      if (input.firing && player.weapon === 'pistol') combat.shoot(player, ctx);
+    } else if (player.car) {
+      const sp = vehicles.drivePlayer(player.car, input, dt, ctx);
+      player.update(dt, input, ctx);
+      audio.engine(Math.min(1, Math.abs(sp) / 38));
+      if (input.firing && player.weapon === 'pistol') combat.shoot(player, ctx);
+    }
+    if (player.onFoot) audio.engineOff();
+    // --- World ---------------------------------------------------------------
+    pedestrians.update(dt, ctx);
+    vehicles.update(dt, ctx);
+    combat.update(dt, player);
+    combat.resolvePending(ctx);
+    // Wanted heat decays once the trail goes cold.
+    if (state.time - state.lastCrimeT > 5) {
+      state.wantedHeat = Math.max(0, state.wantedHeat - WANTED.decayPerSec * dt);
+    }
+    state.wanted = Math.min(5, Math.floor(state.wantedHeat / 20));
+    police.update(dt, ctx);
+    missions.update(dt, ctx);
+    // Mission 3 hands Jace a pistol.
+    if (missions.idx === 3 && !player.hasPistol) {
+      player.hasPistol = true;
+      hud.showBanner('PISTOL DIDAPAT', 'Tekan 2 untuk memakai pistol');
+    }
+    // Siren while police are near.
+    const nearCop = police.cars.some((c) => Math.hypot(c.x - player.x, c.z - player.z) < 60);
+    audio.siren(state.wanted > 0 && nearCop);
+    // Busted / wasted.
+    if (player.health <= 0) doWasted();
+    state.missionTarget = missions.target;
+    state.timeOfDay = daynight.t;
+    state.heli = police.heli;
+    updateHint();
+    updateEnterLabel();
+    hud.update(state, dt);
+    document.getElementById('crosshair').style.display = player.weapon === 'pistol' ? 'block' : 'none';
+  } else if (state.phase === 'menu') {
+    pedestrians.update(dt, ctx);
+    vehicles.update(dt, ctx);
+    state.missionTarget = null;
+  } else if (state.phase === 'busted' || state.phase === 'wasted') {
+    pedestrians.update(dt, ctx);
+    vehicles.update(dt, ctx);
+  } else if (state.phase === 'paused') {
+    // Paused: the sim freezes, but P / Esc must still resume the game.
+    if (input.consume('KeyP') || input.consume('Escape')) togglePause();
+    if (input.consume('KeyM')) audio.setMuted(!audio.muted);
+  }
+  // Paused: the sim freezes; only the ambient day/night keeps its place.
+
+  daynight.update(dt, state.time);
+  effects.update(dt);
+  updateCamera(dt);
+  renderer.render(scene, camera);
+
+  if (shot && !shotReadySent) {
+    window.__shotReady = true;
+    shotReadySent = true;
+  }
+}
+
+// --- Shot scenes ------------------------------------------------------------------
+if (shot) {
+  // Apply the shot setup before the first frame.
+  const ctx = makeCtx();
+  state.onMissionComplete = () => {};
+  applyShot(shot, seed, { state, player, vehicles, police, daynight, hud, missions, camera });
+  if (shot === 'start') showOnly(menuEl);
+  else showOnly(null);
+  state.timeOfDay = daynight.t;
+}
+
+// --- Debug API (used by the headless playtests) --------------------------------------
 window.__sunport = {
   state,
-  input: state.input,
-  touch: state.touch,
-  setHours(h) { daynight.setHours(h); },
-  teleport(x, z) {
-    const p = state.player;
-    p.x = x; p.z = z;
-    if (p.mesh) p.mesh.position.set(x, 0, z);
-  },
-  enterNearestCar() { tryEnterCar(); },
-  startMission(i) { startMission(state, i); },
-  setWanted(h) { state.wantedHeat = h; },
-  shoot() { return playerShoot(state); },
+  input,
+  camera,
+  touch: touchActive ? touch : null,
+  police,
+  pedestrians,
+  city,
+  daynight,
   newGame,
+  teleport: (x, z) => {
+    if (player.car) { player.exitCar(); }
+    player.x = x;
+    player.z = z;
+    player.group.position.set(x, 0, z);
+  },
+  setWanted: (n) => {
+    state.wantedHeat = clamp(n, 0, 100);
+    state.wanted = Math.min(5, Math.floor(state.wantedHeat / 20));
+    state.lastCrimeT = state.time;
+  },
+  shoot: () => combat.shoot(player, makeCtx()),
+  bust: () => doBust(),
 };
 
-requestAnimationFrame(loop);
+loop();
