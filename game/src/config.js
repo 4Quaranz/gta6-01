@@ -1,174 +1,99 @@
-// SUNPORT v2 — shared tuning, layout and helpers.
-// The city is a road grid on the coast: beach and sea to the east,
-// Neon Strip in the middle, Downtown to the west, Rustport to the south,
-// and a bridge out to Cayo Verde island across the water.
-
-export function clamp(v, a, b) {
-  return v < a ? a : v > b ? b : v;
-}
-
-export function lerp(a, b, t) {
-  return a + (b - a) * t;
-}
-
-// Shortest signed turn from angle a to angle b, in radians.
-export function angleDelta(a, b) {
-  let d = (b - a) % (Math.PI * 2);
-  if (d > Math.PI) d -= Math.PI * 2;
-  if (d < -Math.PI) d += Math.PI * 2;
-  return d;
-}
-
-export function angleLerp(a, b, t) {
-  return a + angleDelta(a, b) * t;
-}
-
+// SUNPORT v3 — shared tuning constants. Written fresh for the v3 rebuild.
 export const WORLD = {
-  minX: -230,
-  maxX: 320,
-  minZ: -230,
-  maxZ: 250,
-  // Sand starts here, the sea a little further east.
-  beachX0: 196,
-  seaX: 228,
-  // Bridge deck to Cayo Verde island.
-  bridgeZ: 0,
-  bridgeX0: 228,
-  bridgeX1: 312,
-  islandX: 318,
+  half: 260, // playable half-extent in metres (x and z in [-260, 260])
+  beachX: 196, // sand strip starts here (east edge)
+  seaX: 236, // open water starts here
+  island: { x: 300, z: -220, r: 42 }, // Cayo Verde island centre + radius
+  causewayZ: -220, // causeway road line to the island
 };
 
-// North-south avenues and east-west streets (road centre lines, metres).
-export const ROADS_X = [-160, -120, -80, -40, 0, 40, 80, 120, 160, 200];
-export const ROADS_Z = [-160, -120, -80, -40, 0, 40, 80, 120, 160, 200];
-export const ROAD_W = 10;
-export const SIDEWALK_W = 3.5;
+// North-south road centre lines (x) and east-west road centre lines (z).
+// Palmera Boulevard is the easternmost north-south road, along the beach.
+export const NS_ROADS = [-192, -128, -64, 0, 64, 128, 176];
+export const EW_ROADS = [-192, -128, -64, 0, 64, 128, 192];
+export const ROAD_W = 12;
 
-// Rico's Garage — mission 1 target. On the road grid's south-east corner.
-export const GARAGE = { x: 168, z: 160 };
-
-// Mission targets (all on or just beside a road).
-export const TARGETS = {
-  lenaPickup: { x: 40, z: 20 },
-  rustportDrop: { x: -120, z: 160 },
-  bank: { x: -60, z: -60 },
-  marinaMeet: { x: 200, z: -80 },
+export const PLAYER = {
+  walk: 4.3, // m/s on foot
+  run: 7.4, // m/s sprinting
+  accel: 42,
+  staminaMax: 100,
+  staminaDrain: 28, // per second while sprinting
+  staminaRegen: 23, // per second while walking normally
+  jumpSpeed: 7.4,
+  jumpTime: 0.65, // seconds airborne
+  radius: 0.55,
 };
 
-export const SPEEDS = {
-  walk: 4.3,
-  sprint: 7.4,
-  pedWalk: 1.4,
-  pedJog: 3.1,
-  pedFlee: 5.2,
-  traffic: 11,
-  carAccel: 16,
-  carBrake: 30,
-  carMax: 38,
-  carReverseMax: 10,
-  carTurn: 1.9,
-  copCarMax: 34,
+export const CAR = {
+  accel: 14, // m/s^2
+  brake: 18,
+  handbrake: 26,
+  maxSpeed: 36,
+  maxReverse: 10,
+  steer: 1.9, // rad/s at full lock, scaled by speed
+  radius: 1.4,
 };
 
-// Sprint stamina: drains while sprinting, refills while not sprinting.
-export const STAMINA = {
-  max: 100,
-  drain: 24,
-  regen: 15,
-  minToSprint: 18,
-};
-
-// Wanted heat is 0..100; one star per 20 heat.
 export const WANTED = {
-  perStar: 20,
-  stealCar: 10,
-  punchPed: 8,
-  punchCop: 15,
-  shoot: 12,
-  killPed: 20,
-  decayPerSec: 1.1,
-  // Police only ram when the player has been in a standoff this long,
-  // or when wanted is 4 stars or more — never as an instant reply to a punch.
-  ramStandoffSec: 4,
-  ramMinStars: 4,
-  // After the player throws a punch, police hold off ramming for this long.
-  punchGraceSec: 3.5,
-  punchStandoffExtra: 8,
+  perStar: 20, // heat points per wanted star
+  maxHeat: 100,
+  decayPerSec: 1.0,
+  decayDelay: 5, // seconds after the last crime before heat decays
+  cooldown: 8, // main-loop alias for decayDelay
+  decay: 5, // main-loop alias: heat points lost per second while cooling off
+  stealHeat: 25,
+  punchHeat: 6,
+  shotHeat: 12,
+  killHeat: 30,
 };
 
-export const COMBAT = {
-  punchRange: 2.4,
-  punchArc: 1.1,
-  punchTime: 0.45,
-  punchHitAt: 0.14,
-  punchDamage: 22,
-  punchKnock: 5.5,
-  pistolDamage: 34,
-  pistolRange: 60,
-  magSize: 12,
+export const POLICE = {
+  graceAfterPunch: 11.5, // seconds a punch buys: no ramming at all
+  standoffMin: 12, // orbit distance (m)
+  standoffMax: 18,
+  ramMinStandoff: 4, // seconds of standoff before a ram is allowed
+  bustDist: 3.2, // cop car close + slow = busted
+  bustTime: 2.0,
+  footBustDist: 1.6,
+  footBustTime: 1.5,
 };
 
+// Sun-soaked Florida palette: golden hour + neon night.
 export const PALETTE = {
-  skyDay: 0x87c5eb,
-  skyGolden: 0xffb36b,
-  skyDusk: 0x2c3e63,
-  skyNight: 0x0a1424,
-  seaDay: 0x19b8c4,
-  seaNight: 0x0a3a4a,
-  sand: 0xeed9a4,
-  grass: 0x5d8a4a,
-  asphalt: 0x2e3138,
-  sidewalk: 0x9aa0a3,
+  sand: 0xe8d8a8,
+  sea: 0x19b8c4,
+  seaDeep: 0x0a6f7d,
+  grass: 0x4f8f4a,
+  asphalt: 0x2e2e33,
+  sidewalk: 0x9a9a94,
+  pastel: [0xffb3c6, 0xa8e6cf, 0xffd3a5, 0xfdfd96, 0xa5d8ff, 0xffaaa5, 0xc3aed6],
   neonPink: 0xff2e88,
   neonCyan: 0x19e3ff,
-  neonYellow: 0xffd24a,
-  neonMagenta: 0xe040fb,
+  neonYellow: 0xffe14d,
+  glass: 0x8fc7e8,
 };
 
-// Pastel Art Deco hotel colours for Palmera Boulevard.
-export const HOTEL_COLORS = [0xf7a8b8, 0xa8e6cf, 0xffd3a5, 0xffeef0, 0xa5d8ff, 0xf9e784];
-// Downtown glass tower tints.
-export const TOWER_COLORS = [0x2e4a6b, 0x3a5a7a, 0x27435f, 0x46586e];
-// Rustport warehouse colours.
-export const WAREHOUSE_COLORS = [0x8a6f5c, 0x7a7d84, 0x9c8468, 0x6f7a72];
+// Mission target points (must match the playtest harness).
+export const SPOTS = {
+  spawn: { x: 176, z: 20 }, // player start on Palmera Boulevard
+  parked0: { x: 176, z: 42 }, // first parked convertible (mission 1 car)
+  garage: { x: 168, z: 160 }, // mission 1 destination
+  standDown: { x: -100, z: -100 },
+};
 
-export function districtAt(x, z) {
-  if (x >= WORLD.seaX) return 'CAYO VERDE';
-  if (x >= WORLD.beachX0) return 'SOLMAR BEACH';
-  if (x >= 160 && z >= -120 && z <= 120) return 'PALMERA BLVD';
-  if (x >= -40 && x <= 120 && z >= -40 && z <= 40) return 'NEON STRIP';
-  if (x >= -120 && x < 0 && z >= -120 && z < 0) return 'DOWNTOWN';
-  if (z >= 120) return 'RUSTPORT';
-  if (x >= 160 && z >= -120 && z < -40) return 'MARINA';
-  if (z <= -160) return 'NORTH SUNPORT';
-  return 'SUNPORT';
-}
+// Day clock: t is the day fraction (0.00 midnight, 0.25 sunrise, 0.50 noon,
+// 0.75 sunset). A full day lasts 240 s of sim time.
+export const DAY = {
+  start: 0.72, // late afternoon: golden hour is about to start
+  length: 240,
+};
 
-// True when (x, z) is on a road surface (within half the road width of a
-// road centre line), used for traffic lanes, spawning and the minimap.
-export function isOnRoad(x, z) {
-  const hw = ROAD_W / 2 + 1;
-  for (const rx of ROADS_X) if (Math.abs(x - rx) <= hw && z >= -170 && z <= 210) return true;
-  for (const rz of ROADS_Z) if (Math.abs(z - rz) <= hw && x >= -170 && x <= 210) return true;
-  return false;
-}
-
-// Nearest point on the road grid to (x, z): snap to the closest avenue or
-// street centre line.
-export function nearestRoadPoint(x, z) {
-  let bx = ROADS_X[0];
-  let bd = Math.abs(x - bx);
-  for (const rx of ROADS_X) {
-    const d = Math.abs(x - rx);
-    if (d < bd) { bd = d; bx = rx; }
-  }
-  let bz = ROADS_Z[0];
-  bd = Math.abs(z - bz);
-  for (const rz of ROADS_Z) {
-    const d = Math.abs(z - rz);
-    if (d < bd) { bd = d; bz = rz; }
-  }
-  // Snap to whichever centre line is closer.
-  if (Math.abs(x - bx) <= Math.abs(z - bz)) return { x: bx, z };
-  return { x, z: bz };
-}
+// District rectangles for the HUD label (checked in order; matches
+// City.districtAt). Cayo Verde and Solmar Beach are handled first in hud.js.
+export const DISTRICTS = [
+  { name: 'Neon Strip', x0: -40, x1: 90, z0: -40, z1: 90 },
+  { name: 'Downtown', x0: -160, x1: 0, z0: -160, z1: -20 },
+  { name: 'Rustport', x0: -200, x1: -60, z0: 60, z1: 200 },
+  { name: 'Palmera Boulevard', x0: 140, x1: 196, z0: -260, z1: 260 },
+];

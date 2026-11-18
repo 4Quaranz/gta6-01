@@ -1,174 +1,149 @@
-// SUNPORT v2 — combat. A punch is a timed swing: the fist lands 0.14 s
-// into the 0.45 s animation, only on targets inside range and inside the
-// swing arc. A hit staggers the target, throws them back, raises the
-// wanted level and makes nearby pedestrians flee — and tells the police
-// to hold off ramming. Shooting is hitscan from the camera with a
-// magazine and a timed reload.
-
+// SUNPORT v3 — combat: punch (with stagger + police grace) and pistol
+// shooting with a simple ray test, plus reload. Written fresh.
 import * as THREE from 'three';
-import { COMBAT, WANTED, angleDelta } from './config.js';
+import { WANTED } from './config.js';
+
+const PUNCH_RANGE = 2.4;
+const SHOT_RANGE = 60;
+const SHOT_COOLDOWN = 0.18;
+const RELOAD_TIME = 1.2;
+const MAG_SIZE = 12;
 
 export class Combat {
-  constructor(audio, effects) {
-    this.audio = audio;
-    this.effects = effects;
-    this.reloading = false;
+  constructor(G) {
+    this.G = G;
+    this.cooldown = 0;
     this.reloadT = 0;
-    this.fireCooldown = 0;
   }
 
   tryPunch(player) {
     if (!player.startPunch()) return false;
-    this.audio.swoosh();
-    const fx = player.x + Math.sin(player.yaw) * 1.4;
-    const fz = player.z + Math.cos(player.yaw) * 1.4;
-    this.effects.swoosh({ x: fx, y: 1.3, z: fz }, player.yaw);
+    const G = this.G;
+    const now = G.state.time;
+    G.audio.punch();
+    const fx = Math.sin(player.yaw);
+    const fz = Math.cos(player.yaw);
+    G.effects.swooshAt(player.x + fx * 1.1, 1.3, player.z + fz * 1.1, player.yaw);
+    // A punch always buys the no-ram grace, hit or whiff.
+    G.police.onPunch(now);
+    G.state.wantedHeat = Math.min(WANTED.maxHeat, G.state.wantedHeat + WANTED.punchHeat);
+    G.state.lastCrimeT = now;
+    // Nearest pedestrian in front gets staggered and flees.
+    const ped = G.pedestrians.staggerAt(player.x + fx * 1.4, player.z + fz * 1.4, PUNCH_RANGE);
+    if (ped) {
+      G.effects.burst(ped.x, 1.2, ped.z, 0xffcc66, 10, 4);
+      G.audio.hit();
+    }
+    // A foot cop in range takes damage.
+    for (const cop of [...G.police.cops]) {
+      const d = Math.hypot(cop.x - player.x, cop.z - player.z);
+      if (d < PUNCH_RANGE) {
+        cop.health -= 34;
+        G.effects.burst(cop.x, 1.2, cop.z, 0xff5544, 12, 5);
+        G.audio.hit();
+        if (cop.health <= 0) {
+          G.police.removeCop(cop);
+          G.state.wantedHeat = Math.min(WANTED.maxHeat, G.state.wantedHeat + WANTED.killHeat);
+        }
+        break;
+      }
+    }
+    // A car in front gets dented (shake + sparks).
+    const car = G.vehicles.nearestCar(player.x + fx * 1.6, player.z + fz * 1.6, 2.2);
+    if (car && !ped) {
+      G.effects.burst(car.x, 1.0, car.z, 0xffcc66, 8, 4);
+      G.audio.hit();
+    }
     return true;
   }
 
-  // Resolve the punch at the moment the fist lands.
-  resolvePunch(player, ctx) {
-    const px = player.x;
-    const pz = player.z;
-    const inArc = (tx, tz) => {
-      const d = Math.hypot(tx - px, tz - pz);
-      if (d > COMBAT.punchRange) return null;
-      const ang = Math.atan2(tx - px, tz - pz);
-      if (Math.abs(angleDelta(ang, player.yaw)) > COMBAT.punchArc) return null;
-      return d;
-    };
-    // Foot cops first — punching the law costs more.
-    let hitCop = null;
-    let hitCopD = Infinity;
-    for (const cop of ctx.police.cops) {
-      const d = inArc(cop.x, cop.z);
-      if (d !== null && d < hitCopD) { hitCopD = d; hitCop = cop; }
+  shoot(player) {
+    const G = this.G;
+    if (player.weapon !== 'pistol' || !player.hasPistol) return false;
+    if (this.cooldown > 0 || this.reloadT > 0) return false;
+    if (player.mag <= 0) {
+      // Dry fire: no auto-reload — the player presses R to reload.
+      G.audio.click();
+      return false;
     }
-    if (hitCop) {
-      hitCop.health -= COMBAT.punchDamage;
-      hitCop.staggerT = 0.7;
-      const dx = hitCop.x - px;
-      const dz = hitCop.z - pz;
-      const l = Math.hypot(dx, dz) || 1;
-      hitCop.x += (dx / l) * COMBAT.punchKnock * 0.35;
-      hitCop.z += (dz / l) * COMBAT.punchKnock * 0.35;
-      this.landHit(player, ctx, hitCop.x, hitCop.z, WANTED.punchCop, 'cop');
-      if (hitCop.health <= 0) {
-        ctx.police.removeCop(hitCop);
-      }
-      return 'cop';
-    }
-    // Then pedestrians.
-    const ped = ctx.pedestrians.nearest(px, pz, COMBAT.punchRange);
-    if (ped) {
-      const d = inArc(ped.x, ped.z);
-      if (d !== null) {
-        ctx.pedestrians.knock(ped, px, pz, COMBAT.punchKnock);
-        this.landHit(player, ctx, ped.x, ped.z, WANTED.punchPed, 'ped');
-        return 'ped';
-      }
-    }
-    return null;
-  }
-
-  landHit(player, ctx, tx, tz, heat, kind) {
-    this.audio.punch();
-    this.effects.burst({ x: tx, y: 1.2, z: tz }, 0xffd24a, 14);
-    ctx.state.wantedHeat = Math.min(100, ctx.state.wantedHeat + heat);
-    ctx.state.lastCrimeT = ctx.time;
-    ctx.police.onPunch(ctx.time);
-    ctx.pedestrians.scare(tx, tz, 16);
-    if (ctx.onShake) ctx.onShake(0.25);
-    return kind;
-  }
-
-  shoot(player, ctx) {
-    if (player.weapon !== 'pistol' || player.mag <= 0 || this.reloading) return false;
-    if (this.fireCooldown > 0) return false;
-    this.fireCooldown = 0.18;
+    this.cooldown = SHOT_COOLDOWN;
     player.mag -= 1;
-    this.audio.gunshot();
-    ctx.state.wantedHeat = Math.min(100, ctx.state.wantedHeat + WANTED.shoot);
-    ctx.state.lastCrimeT = ctx.time;
-    ctx.pedestrians.scare(player.x, player.z, 20);
-    // Hitscan along the camera forward.
-    const cam = ctx.camera;
-    const origin = new THREE.Vector3();
-    cam.getWorldPosition(origin);
+    G.audio.shoot();
+    G.effects.shake(0.12);
+    // Muzzle flash at the gun.
+    const fx = Math.sin(player.yaw);
+    const fz = Math.cos(player.yaw);
+    G.effects.burst(player.x + fx * 0.8, 1.45, player.z + fz * 0.8, 0xffe9a8, 6, 3);
+    // Ray from the player through the camera's aim direction.
     const dir = new THREE.Vector3();
-    cam.getWorldDirection(dir);
-    const muzzle = new THREE.Vector3(player.x, 1.4, player.z).add(new THREE.Vector3(Math.sin(player.yaw), 0, Math.cos(player.yaw)).multiplyScalar(0.8));
-    this.effects.flash({ x: muzzle.x, y: muzzle.y, z: muzzle.z }, 1.6);
+    G.camera.getWorldDirection(dir);
+    const ox = player.x;
+    const oy = 1.5;
+    const oz = player.z;
     let best = null;
-    let bestD = COMBAT.pistolRange;
-    const test = (tx, tz, ty, radius, ref) => {
-      const to = new THREE.Vector3(tx - origin.x, ty - origin.y, tz - origin.z);
-      const d = to.length();
-      if (d > bestD) return;
-      to.normalize();
-      const dot = to.dot(dir);
-      if (dot > 0.998) { bestD = d; best = ref; }
-    };
-    for (const ped of ctx.pedestrians.list) test(ped.x, ped.z, 1.2, 0.8, { kind: 'ped', ref: ped });
-    for (const cop of ctx.police.cops) test(cop.x, cop.z, 1.2, 0.8, { kind: 'cop', ref: cop });
-    for (const car of ctx.police.cars) test(car.x, car.z, 1.0, 2.0, { kind: 'car', ref: car });
-    if (best) {
-      const tx = best.ref.x;
-      const tz = best.ref.z;
-      this.effects.burst({ x: tx, y: 1.2, z: tz }, 0xff5544, 18);
-      if (best.kind === 'ped') ctx.pedestrians.knock(best.ref, player.x, player.z, 8);
-      if (best.kind === 'cop') {
-        best.ref.health -= COMBAT.pistolDamage;
-        best.ref.staggerT = 0.8;
-        if (best.ref.health <= 0) ctx.police.removeCop(best.ref);
+    let bestT = SHOT_RANGE;
+    const testPoint = (x, y, z, radius, ref) => {
+      const dx = x - ox;
+      const dy = y - oy;
+      const dz = z - oz;
+      const t = dx * dir.x + dy * dir.y + dz * dir.z;
+      if (t < 0.5 || t > bestT) return;
+      const px = ox + dir.x * t;
+      const py = oy + dir.y * t;
+      const pz = oz + dir.z * t;
+      const miss = Math.hypot(x - px, y - py, z - pz);
+      if (miss < radius) {
+        bestT = t;
+        best = { ref, x: px, y: py, z: pz, t };
       }
-      if (best.kind === 'car') ctx.state.wantedHeat = Math.min(100, ctx.state.wantedHeat + 6);
+    };
+    for (const p of G.pedestrians.list) testPoint(p.x, 1.1, p.z, 1.1, { kind: 'ped', ped: p });
+    for (const cop of G.police.cops) testPoint(cop.x, 1.1, cop.z, 1.1, { kind: 'cop', cop });
+    for (const car of G.vehicles.parked) testPoint(car.x, 0.9, car.z, 1.6, { kind: 'car', car });
+    for (const t of G.vehicles.traffic) testPoint(t.car.x, 0.9, t.car.z, 1.6, { kind: 'car', car: t.car });
+    for (const c of G.police.cars) testPoint(c.car.x, 0.9, c.car.z, 1.6, { kind: 'copcar', car: c.car });
+    if (best) {
+      G.effects.burst(best.x, best.y, best.z, 0xff5544, 12, 5);
+      if (best.ref.kind === 'ped') {
+        G.pedestrians.staggerAt(best.ref.ped.x, best.ref.ped.z, 0.5);
+        G.pedestrians.fleeFrom(player.x, player.z, 18);
+      } else if (best.ref.kind === 'cop') {
+        best.ref.cop.health -= 34;
+        if (best.ref.cop.health <= 0) {
+          G.police.removeCop(best.ref.cop);
+          G.state.wantedHeat = Math.min(WANTED.maxHeat, G.state.wantedHeat + WANTED.killHeat);
+        }
+      }
+      G.audio.hit();
     } else {
-      // Tracer into the distance: a short-lived spark where the ray ends.
-      const end = origin.clone().add(dir.clone().multiplyScalar(40));
-      this.effects.burst({ x: end.x, y: Math.max(0.5, end.y), z: end.z }, 0xffd24a, 6);
+      // Impact dust where the shot lands.
+      const hx = ox + dir.x * 40;
+      const hz = oz + dir.z * 40;
+      G.effects.burst(hx, 0.4, hz, 0xcccccc, 5, 2);
     }
-    if (ctx.onShake) ctx.onShake(0.12);
+    G.state.wantedHeat = Math.min(WANTED.maxHeat, G.state.wantedHeat + WANTED.shotHeat);
+    G.state.lastCrimeT = G.state.time;
+    G.pedestrians.fleeFrom(player.x, player.z, 20);
     return true;
   }
 
   startReload(player) {
-    if (player.weapon !== 'pistol' || this.reloading) return false;
-    if (player.mag >= COMBAT.magSize || player.reserve <= 0) return false;
-    this.reloading = true;
-    this.reloadT = 1.2;
-    this.audio.reload();
+    if (this.reloadT > 0 || player.mag >= MAG_SIZE || player.reserve <= 0) return false;
+    this.reloadT = RELOAD_TIME;
     return true;
   }
 
   update(dt, player) {
-    if (this.fireCooldown > 0) this.fireCooldown -= dt;
-    if (this.reloading) {
+    if (this.cooldown > 0) this.cooldown -= dt;
+    if (this.reloadT > 0) {
       this.reloadT -= dt;
       if (this.reloadT <= 0) {
-        const need = COMBAT.magSize - player.mag;
+        const need = MAG_SIZE - player.mag;
         const take = Math.min(need, player.reserve);
         player.mag += take;
         player.reserve -= take;
-        this.reloading = false;
+        this.reloadT = 0;
       }
-    }
-    // Resolve the punch at the fist-landing moment (0.14 s in).
-    if (player.punchT > 0 && !player.punchDidHit) {
-      if (player.punchT <= 0.45 - COMBAT.punchHitAt) {
-        player.punchDidHit = true;
-        this._pendingResolve = player;
-      }
-    }
-  }
-
-  // Called by main each frame after update(): resolves a punch that
-  // landed this frame, with the full context available.
-  resolvePending(ctx) {
-    if (this._pendingResolve) {
-      const p = this._pendingResolve;
-      this._pendingResolve = null;
-      this.resolvePunch(p, ctx);
     }
   }
 }

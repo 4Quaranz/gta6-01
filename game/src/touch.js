@@ -1,108 +1,140 @@
-// SUNPORT v2 — touch controls. Shown only on touch devices; every
-// button and the joystick write the same Input flags the keyboard writes,
-// so the game logic has a single input path. Camera drag uses pointer
-// deltas on the game area (outside the buttons and the stick).
-
-export class TouchUI {
-  constructor(input, callbacks) {
-    this.input = input;
-    this.cb = callbacks;
-    this.isTouch = ('ontouchstart' in window) || navigator.maxTouchPoints > 0;
+// SUNPORT v3 — touch controls: virtual joystick, camera drag, and the
+// action buttons (ENTER / PUNCH / FIRE / RELOAD / INTERACT / SPRINT /
+// PAUSE). Shown only on touch devices. The joystick and buttons write
+// straight into the shared Input fields (input.stick, input.firing,
+// input.sprintTouch, input.camDX/camDY), so the game logic never cares
+// which device produced an action. Written fresh.
+export class TouchControls {
+  constructor(G) {
+    this.G = G;
+    this.active = false;
     this.stickId = null;
-    this.stickCenter = { x: 0, y: 0 };
     this.camId = null;
     this.camLast = { x: 0, y: 0 };
+    this.detect();
   }
 
-  attach() {
-    if (!this.isTouch) return false;
+  detect() {
+    const isTouch =
+      'ontouchstart' in window ||
+      (window.matchMedia && window.matchMedia('(pointer: coarse)').matches) ||
+      navigator.maxTouchPoints > 0;
+    if (!isTouch) {
+      document.body.classList.remove('touch');
+      return;
+    }
+    this.active = true;
     document.body.classList.add('touch');
-    const ui = document.getElementById('touch-ui');
-    ui.hidden = false;
-    // --- Joystick ---------------------------------------------------------
-    const stick = document.getElementById('stick');
-    const knob = document.getElementById('knob');
-    const R = 42;
-    const setKnob = (dx, dy) => {
-      knob.style.transform = `translate(calc(-50% + ${dx}px), calc(-50% + ${dy}px))`;
-    };
-    stick.addEventListener('pointerdown', (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      this.stickId = e.pointerId;
-      stick.setPointerCapture(e.pointerId);
-      const r = stick.getBoundingClientRect();
-      this.stickCenter = { x: r.left + r.width / 2, y: r.top + r.height / 2 };
-      this._stickMove(e, R, setKnob);
-    });
-    stick.addEventListener('pointermove', (e) => {
-      if (e.pointerId !== this.stickId) return;
-      e.preventDefault();
-      this._stickMove(e, R, setKnob);
-    });
-    const endStick = (e) => {
-      if (e.pointerId !== this.stickId) return;
-      this.stickId = null;
-      this.input.stick.x = 0;
-      this.input.stick.y = 0;
-      setKnob(0, 0);
-    };
-    stick.addEventListener('pointerup', endStick);
-    stick.addEventListener('pointercancel', endStick);
-    // --- Camera drag on the game area --------------------------------------
-    const game = document.getElementById('game');
-    game.addEventListener('pointerdown', (e) => {
-      if (e.pointerType === 'mouse') return;
-      if (e.target.closest('#touch-ui')) return;
-      this.camId = e.pointerId;
-      this.camLast = { x: e.clientX, y: e.clientY };
-    });
-    game.addEventListener('pointermove', (e) => {
-      if (e.pointerId !== this.camId) return;
-      e.preventDefault();
-      this.input.mouseDX += (e.clientX - this.camLast.x) * 2.2;
-      this.input.mouseDY += (e.clientY - this.camLast.y) * 2.2;
-      this.camLast = { x: e.clientX, y: e.clientY };
-    });
-    const endCam = (e) => { if (e.pointerId === this.camId) this.camId = null; };
-    game.addEventListener('pointerup', endCam);
-    game.addEventListener('pointercancel', endCam);
-    // --- Action buttons -----------------------------------------------------
-    const hold = (id, down, up) => {
-      const el = document.getElementById(id);
-      if (!el) return;
-      el.addEventListener('pointerdown', (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        el.classList.add('active');
-        down();
-      });
-      const release = (e) => {
-        el.classList.remove('active');
-        if (up) up();
-      };
-      el.addEventListener('pointerup', release);
-      el.addEventListener('pointercancel', release);
-      el.addEventListener('pointerleave', release);
-    };
-    const tap = (id, fn) => hold(id, fn, null);
-    tap('btn-enter', () => this.cb.onEnter());
-    tap('btn-punch', () => this.cb.onPunch());
-    tap('btn-reload', () => this.cb.onReload());
-    tap('btn-interact', () => this.cb.onInteract());
-    tap('btn-pause', () => this.cb.onPause());
-    hold('btn-fire', () => { this.input.firing = true; this.cb.onFireStart(); }, () => { this.input.firing = false; this.cb.onFireStop(); });
-    hold('btn-sprint', () => { this.input.sprintTouch = true; }, () => { this.input.sprintTouch = false; });
-    return true;
+    this.bind();
   }
 
-  _stickMove(e, R, setKnob) {
-    let dx = e.clientX - this.stickCenter.x;
-    let dy = e.clientY - this.stickCenter.y;
-    const len = Math.hypot(dx, dy);
-    if (len > R) { dx = (dx / len) * R; dy = (dy / len) * R; }
-    setKnob(dx, dy);
-    this.input.stick.x = dx / R;
-    this.input.stick.y = dy / R;
+  bind() {
+    const q = (id) => document.getElementById(id);
+    const input = this.G.input;
+    const ui = q('touch-ui');
+    if (ui) ui.hidden = false;
+    // Joystick: drag the stick, it writes to input.stick (y negative = up).
+    const stick = q('stick');
+    const zone = q('stick-zone');
+    if (stick && zone) {
+      const setStick = (clientX, clientY) => {
+        const r = zone.getBoundingClientRect();
+        const cx = r.left + r.width / 2;
+        const cy = r.top + r.height / 2;
+        let dx = (clientX - cx) / (r.width / 2);
+        let dy = (clientY - cy) / (r.height / 2);
+        const len = Math.hypot(dx, dy);
+        if (len > 1) {
+          dx /= len;
+          dy /= len;
+        }
+        input.stick.x = dx;
+        input.stick.y = dy;
+        stick.style.transform = `translate(calc(-50% + ${dx * 34}px), calc(-50% + ${dy * 34}px))`;
+      };
+      const resetStick = () => {
+        input.stick.x = 0;
+        input.stick.y = 0;
+        stick.style.transform = 'translate(-50%, -50%)';
+      };
+      zone.addEventListener('touchstart', (e) => {
+        e.preventDefault();
+        this.stickId = e.changedTouches[0].identifier;
+        setStick(e.changedTouches[0].clientX, e.changedTouches[0].clientY);
+      }, { passive: false });
+      zone.addEventListener('touchmove', (e) => {
+        e.preventDefault();
+        for (const t of e.changedTouches) {
+          if (t.identifier === this.stickId) setStick(t.clientX, t.clientY);
+        }
+      }, { passive: false });
+      const end = (e) => {
+        for (const t of e.changedTouches) {
+          if (t.identifier === this.stickId) {
+            this.stickId = null;
+            resetStick();
+          }
+        }
+      };
+      zone.addEventListener('touchend', end);
+      zone.addEventListener('touchcancel', end);
+    }
+    // Camera drag: touch the right half of the screen and drag.
+    const game = q('game');
+    if (game) {
+      game.addEventListener('touchstart', (e) => {
+        for (const t of e.changedTouches) {
+          if (t.clientX > window.innerWidth * 0.4 && this.camId === null) {
+            this.camId = t.identifier;
+            this.camLast = { x: t.clientX, y: t.clientY };
+          }
+        }
+      }, { passive: true });
+      game.addEventListener('touchmove', (e) => {
+        for (const t of e.changedTouches) {
+          if (t.identifier === this.camId) {
+            const dx = t.clientX - this.camLast.x;
+            const dy = t.clientY - this.camLast.y;
+            this.camLast = { x: t.clientX, y: t.clientY };
+            input.camDX += dx;
+            input.camDY += dy;
+          }
+        }
+      }, { passive: true });
+      const endCam = (e) => {
+        for (const t of e.changedTouches) {
+          if (t.identifier === this.camId) this.camId = null;
+        }
+      };
+      game.addEventListener('touchend', endCam);
+      game.addEventListener('touchcancel', endCam);
+    }
+    // Action buttons.
+    const press = (id, down, up) => {
+      const el = q(id);
+      if (!el) return;
+      el.addEventListener('touchstart', (e) => {
+        e.preventDefault();
+        down();
+      }, { passive: false });
+      if (up) {
+        el.addEventListener('touchend', (e) => { e.preventDefault(); up(); }, { passive: false });
+        el.addEventListener('touchcancel', () => up(), { passive: true });
+      }
+      // No click fallback: a tap already fires touchstart, and a click
+      // handler would run the same action twice (enter then exit).
+    };
+    const G = this.G;
+    press('btn-enter', () => G.tryEnterExitCar());
+    press('btn-punch', () => G.tryPunch());
+    press('btn-fire',
+      () => { input.firing = true; },
+      () => { input.firing = false; });
+    press('btn-reload', () => G.tryReload());
+    press('btn-interact', () => G.tryInteract());
+    press('btn-sprint',
+      () => { input.sprintTouch = true; },
+      () => { input.sprintTouch = false; });
+    press('btn-pause', () => G.togglePause());
   }
 }

@@ -1,83 +1,52 @@
-# SUNPORT — Kota Pantai, Satu Malam, Empat Misi
+# SUNPORT — Make GTA 6
 
-[![gta6-01](https://make.fun/badge/gta6-01.svg)](https://make.fun/competitions/gta6-01)
-[![rank](https://make.fun/badge/gta6-01/4Quaranz/gta6-01/rank.svg)](https://make.fun/competitions/gta6-01)
-[![reward](https://make.fun/badge/gta6-01/4Quaranz/gta6-01/reward.svg)](https://make.fun/competitions/gta6-01)
+[![Make GTA 6](https://make.fun/badge/gta6-01.svg)](https://make.fun/bounty/gta6-01)
+[![Rank](https://make.fun/badge/gta6-01/4Quaranz/gta6-01/rank.svg)](https://make.fun/bounty/gta6-01)
+[![Reward](https://make.fun/badge/gta6-01/4Quaranz/gta6-01/reward.svg)](https://make.fun/bounty/gta6-01)
 
-> Referral: `scveefga`
+An original open-world crime game in the spirit of GTA 6: explore the sun-soaked beach city of Sunport as Jace Moreno — steal cars and drive them, dodge the Sunport PD's wanted system with its helicopter, fight on foot, and run four "Sunport Nights" missions with Lena across Palmera Boulevard, the Neon Strip, the marina and the Cayo Verde lighthouse. Three.js, static files only, no network requests, keyboard + mouse on desktop and full touch controls on phones.
 
-**SUNPORT** adalah game open-world 3D bergaya GTA 6 — orisinal sepenuhnya
-(bukan Vice City, bukan Rockstar): kota pantai fiktif dengan boulevard hotel
-Art Deco pastel, laut turquoise, Neon Strip, Downtown, Rustport, dan pulau
-Cayo Verde di seberang jembatan. Jace Moreno dan Lena Cruz menjalani empat
-misi "Sunport Nights": curi mobil, jemput Lena, buat wanted 2 bintang, lalu
-rampok Bank Sunport dan kabur ke pulau.
+## Play it
 
-## Cara main
-
-Buka `game/index.html` di browser (atau `node serve.ts` lalu buka
-http://localhost:8080). Tanpa network, tanpa instalasi — semua aset dibuat
-dari kode (three.js di-vendor di `game/vendor/`).
-
-- **Keyboard:** WASD jalan · Shift lari · E masuk/keluar mobil · F pukul ·
-  klik tembak · R reload · 1/2 ganti senjata (tinju/pistol) · P jeda · M bisu
-- **HP (sentuh):** joystick kiri untuk jalan/mengemudi · tombol kanan: MASUK
-  MOBIL, PUKUL, TEMBAK, RELOAD, INTERAKSI, LARI · drag layar kanan untuk
-  kamera · tombol II untuk jeda
-
-## Yang ada di game
-
-- **Kota yang rapi dan hidup:** grid jalan yang jelas, blok kota teratur,
-  tiap distrik terasa beda — menara kaca Downtown, hotel pastel Palmera
-  Boulevard (balkon, kanopi, neon), klub Neon Strip, gudang Rustport
-  (silo, kontainer, dermaga). Gedung punya atap berundak, AC, antena,
-  papan reklame 3D, gapura SUNPORT, monumen, halte, kios, dan lampu jalan.
-- **Dunia bergerak:** pejalan kaki benar-benar berjalan di trotoar (ayun
-  lengan/kaki, ada yang jogging, duduk di pantai, lari ketakutan saat ada
-  keributan), lalu lintas mengalir dan berbelok di persimpangan, awan
-  melintasi langit, palem bergoyang, laut bergerak, yacht mengapung,
-  pesawat lewat, neon berkedip di malam hari.
-- **Animasi pukul:** ayunan lengan penuh + badan membungkuk/maju + garis
-  gerak + musuh terhuyung. Polisi tidak langsung menabrak setelah pukulan —
-  mereka mendekat, melambat, mengitari dari jarak aman, dan baru boleh
-  menabrak setelah jeda beberapa detik (atau saat wanted sudah 4 bintang).
-- **LARI (sprint):** tombol LARI di HP + Shift di keyboard, dengan stamina
-  (habis saat lari, isi ulang saat jalan) dan indikator di HUD.
-- **Wanted 0–5 bintang:** mobil polisi + polisi jalan kaki mengejar,
-  helikopter dengan sorot lampu di 4+ bintang, BUSTED kalau polisi
-  menangkapmu, WASTED kalau nyawamu habis.
-- **4 misi berantai** dengan dialog Jace–Lena, marker di minimap, dan
-  hadiah $500 / $400 / $800 / $1500.
-- **Siklus siang/malam** (~4 menit): fajar, siang, golden hour, senja,
-  malam neon — jendela menyala, lampu jalan dan neon hidup.
-- **HUD ala GTA:** minimap, bintang, uang, nyawa, stamina, senjata/ammo,
-  kecepatan, distrik, objektif, dan dialog.
-- **Save** otomatis tiap misi selesai + tombol SIMPAN di menu jeda
-  (localStorage).
-- **Audio synth WebAudio** (tanpa file): ombak, mesin, sirene, pukulan,
-  tembakan, dan jingle misi.
-
-## Struktur
-
-```
-main.ts            program hand-in (Node 22, stdlib) — salin game/ +
-                   screenshots/ ke /output, tulis dossier.json
-game/
-  index.html       halaman game + HUD + kontrol sentuh
-  src/             config, rng, audio, effects, city, daynight, hud,
-                   input, player, pedestrians, vehicles, police,
-                   combat, missions, save, touch, shots, main
-  vendor/three/    three.js (vendored)
-serve.ts           server statis lokal untuk game/
-shots.json         4 shot untuk screenshot
-screenshots/       01-start, 02-street, 03-drive, 04-chase
-vendor/
-  makefun-game.ts  library dossier make.fun (vendored)
+```sh
+node serve.ts
 ```
 
-## Screenshot
+Then open http://localhost:8080 in desktop Chrome. No build step, no install.
 
-1. `01-start` — judul SUNPORT di Palmera Boulevard saat golden hour.
-2. `02-street` — siang di boulevard: Jace jalan kaki, kerumunan, lalu lintas.
-3. `03-drive` — mengemudi convertible saat golden hour.
-4. `04-chase` — kejar-kejaran polisi di jembatan saat senja, helikopter di atas.
+## Controls
+
+- **W A S D** — move / drive (W gas, S brake/reverse, A/D steer)
+- **Shift** — sprint (drains stamina, shown in the HUD)
+- **Space** — jump on foot / handbrake while driving
+- **E** — enter / exit a car (stealing one raises your wanted level)
+- **F** — punch (a punch buys 11.5 s of no-ram grace from police cars)
+- **Left click** — shoot the pistol · **R** — reload · **1 / 2** — fists / pistol
+- **Right-drag** — orbit the camera · **P / Esc** — pause · **M** — mute
+- On phones: virtual joystick, camera drag, and ENTER / PUNCH / FIRE / RELOAD / INTERACT / SPRINT / PAUSE buttons appear automatically.
+
+## What is in the game
+
+- A full day/night cycle (golden hour, neon night) with ACES tone mapping, an animated sea, drifting clouds, swaying palms and lit windows.
+- Six districts that feel different: Palmera Boulevard (pastel art-deco hotels), Solmar Beach (sand, lifeguard tower, umbrellas), Neon Strip (clubs), Downtown (glass towers), Rustport (port + warehouses) and Cayo Verde (an island across a causeway, with a lighthouse).
+- Six car types plus police cars, a taxi and a van; glossy paint, headlights and taillights that switch on at night; traffic that flows and yields.
+- A 0–5 star wanted system: police cars that approach, stand off and ram (never right after a punch), foot cops, and a searchlight helicopter at 4+ stars. Get busted and you start over.
+- 36 sidewalk pedestrians plus beach walkers, all with faces (eyes, 3D noses, mouths — nine variants, some with glasses or hats) who walk, flee and stagger when hit.
+- Four chained missions, "Sunport Nights" (Wheels / Pickup / Getaway / The Big One), with Jace–Lena dialogue in the HUD, a beacon on each target and cash rewards.
+- A GTA-style HUD: minimap, wanted stars, health, stamina, money, district, clock, objective and speed; start / pause / busted screens; progress saved to localStorage; synthesized WebAudio sound (engine, siren, gunshots) with no audio files.
+
+## Hand in
+
+```sh
+MAKEFUN_OUTPUT_DIR=out node main.ts
+```
+
+`main.ts` copies `game/` and `screenshots/` into the output directory and writes `dossier.json` with the vendored make.fun library. Screenshots are real renders of the game itself, taken in a browser.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
+
+---
+
+Optional: earn referral rewards, a second way to make money — [join make.fun with my referral link](https://make.fun/r/scveefga).

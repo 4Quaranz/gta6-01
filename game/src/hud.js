@@ -1,167 +1,172 @@
-// SUNPORT v2 — the GTA-style HUD: minimap bottom-left, wanted stars and
-// money top-right, health + stamina bottom-left, weapon and speed
-// bottom-right, objective and district top-left, dialogue and banners.
+// SUNPORT v3 — HUD: money, health, wanted stars, stamina, district,
+// objective + dialogue, clock, minimap, banners, start / pause / end
+// screens. All elements live in index.html; this file drives them.
+// Written fresh.
+import { DISTRICTS } from './config.js';
 
-import { WORLD, ROADS_X, ROADS_Z, districtAt } from './config.js';
+const WORLD = 520; // -260..260
 
-export class HUD {
-  constructor() {
-    this.el = {};
-    const ids = ['minimap', 'hp-num', 'hp-fill', 'stamina-fill', 'stamina',
-      'weapon', 'ammo-big', 'speed', 'stars', 'money', 'objective',
-      'district', 'dialogue', 'hint', 'banner', 'banner-title', 'banner-sub',
-      'dmg', 'hud'];
-    for (const id of ids) this.el[id] = document.getElementById(id);
-    this.mm = this.el.minimap.getContext('2d');
+export class Hud {
+  constructor(G) {
+    this.G = G;
+    const q = (id) => document.getElementById(id);
+    this.el = {
+      money: q('money'),
+      healthFill: q('health-fill'),
+      stars: q('stars'),
+      staminaFill: q('stamina-fill'),
+      district: q('district'),
+      objective: q('objective'),
+      dialogue: q('dialogue'),
+      clock: q('clock'),
+      ammo: q('ammo'),
+      weapon: q('weapon'),
+      crosshair: q('crosshair'),
+      banner: q('banner'),
+      bannerTitle: q('banner-title'),
+      bannerSub: q('banner-sub'),
+      minimap: q('minimap'),
+      btnEnter: q('btn-enter'),
+      startScreen: q('start-screen'),
+      pauseScreen: q('pause-screen'),
+      endScreen: q('end-screen'),
+      endTitle: q('end-title'),
+      endSub: q('end-sub'),
+      speed: q('speed'),
+    };
     this.bannerT = 0;
-    this.dialogueT = 0;
-    this.dmgT = 0;
-    this.mapW = 180;
-    this.mapH = 180;
+    this.minimapCtx = this.el.minimap ? this.el.minimap.getContext('2d') : null;
+    this.mapT = 0;
   }
 
-  worldToMap(x, z) {
-    const fx = (x - WORLD.minX) / (WORLD.maxX - WORLD.minX);
-    const fz = (z - WORLD.minZ) / (WORLD.maxZ - WORLD.minZ);
-    return { x: fx * this.mapW, y: fz * this.mapH };
-  }
-
-  drawMinimap(state) {
-    const g = this.mm;
-    const W = this.mapW;
-    const H = this.mapH;
-    g.clearRect(0, 0, W, H);
-    g.fillStyle = '#1d2b1a';
-    g.fillRect(0, 0, W, H);
-    // Sea + beach on the east.
-    const sea = this.worldToMap(WORLD.seaX, 0);
-    g.fillStyle = '#0a6f7d';
-    g.fillRect(sea.x, 0, W - sea.x, H);
-    const beach = this.worldToMap(WORLD.beachX0, 0);
-    g.fillStyle = '#eed9a4';
-    g.fillRect(beach.x, 0, sea.x - beach.x, H);
-    // Roads.
-    g.strokeStyle = '#5a6068';
-    g.lineWidth = 3;
-    for (const rx of ROADS_X) {
-      const a = this.worldToMap(rx, WORLD.minZ);
-      const b = this.worldToMap(rx, WORLD.maxZ);
-      g.beginPath(); g.moveTo(a.x, a.y); g.lineTo(b.x, b.y); g.stroke();
+  districtAt(x, z) {
+    if (x > 195) return 'Solmar Beach';
+    for (const d of DISTRICTS) {
+      if (x >= d.x0 && x < d.x1 && z >= d.z0 && z < d.z1) return d.name;
     }
-    for (const rz of ROADS_Z) {
-      const a = this.worldToMap(WORLD.minX, rz);
-      const b = this.worldToMap(WORLD.maxX, rz);
-      g.beginPath(); g.moveTo(a.x, a.y); g.lineTo(b.x, b.y); g.stroke();
-    }
-    // Mission target: pulsing yellow diamond.
-    const tgt = state.missionTarget;
-    if (tgt) {
-      const p = this.worldToMap(tgt.x, tgt.z);
-      const r = 4 + Math.sin(state.time * 5) * 1.5;
-      g.fillStyle = '#ffd24a';
-      g.beginPath();
-      g.moveTo(p.x, p.y - r); g.lineTo(p.x + r, p.y);
-      g.lineTo(p.x, p.y + r); g.lineTo(p.x - r, p.y);
-      g.closePath(); g.fill();
-    }
-    // Police blips: red for cars, blue for foot cops.
-    g.fillStyle = '#ff5544';
-    for (const c of state.policeCars) {
-      const p = this.worldToMap(c.x, c.z);
-      g.beginPath(); g.arc(p.x, p.y, 3, 0, Math.PI * 2); g.fill();
-    }
-    g.fillStyle = '#5aa2ff';
-    for (const c of state.cops) {
-      const p = this.worldToMap(c.x, c.z);
-      g.beginPath(); g.arc(p.x, p.y, 2.4, 0, Math.PI * 2); g.fill();
-    }
-    // Player arrow, rotated by heading.
-    const p = this.worldToMap(state.player.x, state.player.z);
-    g.save();
-    g.translate(p.x, p.y);
-    g.rotate(-state.player.yaw + Math.PI);
-    g.fillStyle = '#ffffff';
-    g.beginPath();
-    g.moveTo(0, -6); g.lineTo(4.5, 5); g.lineTo(-4.5, 5);
-    g.closePath(); g.fill();
-    g.restore();
-    // North marker.
-    g.fillStyle = 'rgba(255,255,255,0.8)';
-    g.font = 'bold 10px system-ui, sans-serif';
-    g.fillText('N', 5, 12);
+    return 'Sunport';
   }
 
-  showBanner(title, sub) {
-    this.el['banner-title'].textContent = title;
-    this.el['banner-sub'].textContent = sub || '';
-    this.el.banner.hidden = false;
-    this.bannerT = 3.5;
+  banner(title, sub = '', ms = 2600) {
+    this.el.bannerTitle.textContent = title;
+    this.el.bannerSub.textContent = sub;
+    this.el.banner.classList.add('show');
+    this.bannerT = ms / 1000;
   }
 
-  setDialogue(text) {
-    this.el.dialogue.textContent = text;
-    this.dialogueT = 4.5;
+  showStart() {
+    this.el.startScreen.classList.remove('hidden');
+    this.el.pauseScreen.classList.add('hidden');
+    this.el.endScreen.classList.add('hidden');
   }
 
-  setObjective(text) {
-    this.el.objective.textContent = text;
+  hideStart() {
+    this.el.startScreen.classList.add('hidden');
   }
 
-  setDistrict(name) {
-    this.el.district.textContent = name;
+  showPause() {
+    this.el.pauseScreen.classList.remove('hidden');
   }
 
-  setHint(text) {
-    this.el.hint.textContent = text || '';
-  }
-
-  flashDamage() {
-    this.dmgT = 0.5;
+  hidePause() {
+    this.el.pauseScreen.classList.add('hidden');
   }
 
   showEnd(title, sub) {
-    const end = document.getElementById('end');
-    document.getElementById('end-title').textContent = title;
-    document.getElementById('end-sub').textContent = sub || '';
-    end.hidden = false;
+    this.el.endTitle.textContent = title;
+    this.el.endSub.textContent = sub;
+    this.el.endScreen.classList.remove('hidden');
   }
 
   hideEnd() {
-    document.getElementById('end').hidden = true;
+    this.el.endScreen.classList.add('hidden');
   }
 
-  update(state, dt) {
-    const p = state.player;
-    this.el['hp-num'].textContent = Math.max(0, Math.round(p.health));
-    this.el['hp-fill'].style.width = `${Math.max(0, p.health)}%`;
-    this.el['hp-fill'].style.background = p.health > 50 ? '#39d353' : p.health > 25 ? '#ffd24a' : '#ff5544';
-    // Stamina bar under the health bar.
-    this.el['stamina-fill'].style.width = `${Math.max(0, p.stamina)}%`;
-    this.el['stamina-fill'].style.background = p.stamina > 30 ? '#39d353' : p.stamina > 15 ? '#ffd24a' : '#ff5544';
-    this.el.stamina.style.opacity = p.sprinting || p.stamina < 99 ? '1' : '0.45';
-    // Wanted stars.
-    let stars = '';
-    for (let i = 0; i < 5; i++) stars += i < state.wanted ? '★' : '☆';
-    this.el.stars.textContent = stars;
-    this.el.stars.style.color = state.wanted > 0 ? '#ff5544' : '#888888';
-    this.el.money.textContent = `$${Math.floor(p.money)}`;
+  drawMinimap() {
+    const ctx = this.minimapCtx;
+    if (!ctx) return;
+    const G = this.G;
+    const S = 160;
+    const toMap = (x, z) => [((x + WORLD / 2) / WORLD) * S, ((z + WORLD / 2) / WORLD) * S];
+    ctx.fillStyle = '#0d2b1e';
+    ctx.fillRect(0, 0, S, S);
+    // Water (east) + beach.
+    const [wx] = toMap(195, 0);
+    ctx.fillStyle = '#1e6f8f';
+    ctx.fillRect(wx, 0, S - wx, S);
+    ctx.fillStyle = '#e8d9a0';
+    ctx.fillRect(wx - 4, 0, 4, S);
+    // Roads.
+    ctx.strokeStyle = '#3a3a3a';
+    ctx.lineWidth = 3;
+    const roads = [-192, -128, -64, 0, 64, 128, 176];
+    const ew = [-192, -128, -64, 0, 64, 128, 192];
+    for (const r of roads) {
+      const [x0] = toMap(r, 0);
+      ctx.beginPath(); ctx.moveTo(x0, 0); ctx.lineTo(x0, S); ctx.stroke();
+    }
+    for (const r of ew) {
+      const [, y0] = toMap(0, r);
+      ctx.beginPath(); ctx.moveTo(0, y0); ctx.lineTo(S, y0); ctx.stroke();
+    }
+    // Mission target.
+    const m = G.missions.current();
+    if (m && !G.missions.done) {
+      const [tx, ty] = toMap(m.target.x, m.target.z);
+      ctx.fillStyle = '#ffd23f';
+      ctx.beginPath(); ctx.arc(tx, ty, 5, 0, Math.PI * 2); ctx.fill();
+      ctx.strokeStyle = '#ffd23f';
+      ctx.beginPath(); ctx.arc(tx, ty, 8 + Math.sin(G.state.time * 4) * 2, 0, Math.PI * 2); ctx.stroke();
+    }
+    // Police (blue).
+    ctx.fillStyle = '#4da6ff';
+    for (const c of G.police.cars) {
+      const [px, py] = toMap(c.car.x, c.car.z);
+      ctx.beginPath(); ctx.arc(px, py, 2.5, 0, Math.PI * 2); ctx.fill();
+    }
+    // Player (white, with heading tick).
+    const p = G.player;
+    const [px, py] = toMap(p.x, p.z);
+    ctx.fillStyle = '#ffffff';
+    ctx.beginPath(); ctx.arc(px, py, 3.5, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = '#ffffff';
+    ctx.beginPath();
+    ctx.moveTo(px, py);
+    ctx.lineTo(px + Math.sin(p.yaw) * 7, py + Math.cos(p.yaw) * 7);
+    ctx.stroke();
+  }
+
+  update(dt) {
+    const G = this.G;
+    const p = G.player;
+    const st = G.state;
+    this.el.money.textContent = `$${p.money.toLocaleString('en-US')}`;
+    this.el.healthFill.style.width = `${Math.max(0, p.health)}%`;
+    this.el.staminaFill.style.width = `${Math.max(0, p.stamina)}%`;
+    this.el.stars.textContent = '★'.repeat(st.wanted) + '☆'.repeat(Math.max(0, 5 - st.wanted));
+    this.el.district.textContent = this.districtAt(p.x, p.z);
+    this.el.objective.textContent = G.missions.objective();
+    this.el.dialogue.textContent = G.missions.dialogue();
+    const tod = st.timeOfDay;
+    const hh = Math.floor(tod * 24);
+    const mm = Math.floor((tod * 24 - hh) * 60);
+    this.el.clock.textContent = `${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}`;
     this.el.weapon.textContent = p.weapon === 'pistol' ? 'PISTOL' : 'FISTS';
-    this.el['ammo-big'].textContent = p.weapon === 'pistol' ? `${p.mag} / ${p.reserve}` : '—';
-    this.el.speed.textContent = p.onFoot ? '' : `${Math.round(Math.abs(p.car ? p.car.speed : 0) * 3.6)} km/h`;
-    this.el.district.textContent = districtAt(p.x, p.z);
-    this.drawMinimap(state);
+    this.el.ammo.textContent = p.weapon === 'pistol' ? `${p.mag} / ${p.reserve}` : '';
+    if (this.el.btnEnter) {
+      this.el.btnEnter.textContent = p.onFoot ? 'MASUK' : 'KELUAR MOBIL';
+    }
+    this.el.crosshair.classList.toggle('hidden', p.weapon !== 'pistol');
+    const speedKmh = Math.round((p.onFoot ? p.speed : Math.abs(p.car ? p.car.speed : 0)) * 3.6);
+    this.el.speed.textContent = `${speedKmh} km/h`;
     if (this.bannerT > 0) {
       this.bannerT -= dt;
-      if (this.bannerT <= 0) this.el.banner.hidden = true;
+      if (this.bannerT <= 0) this.el.banner.classList.remove('show');
     }
-    if (this.dialogueT > 0) {
-      this.dialogueT -= dt;
-      this.el.dialogue.style.opacity = this.dialogueT < 1 ? String(Math.max(0, this.dialogueT)) : '1';
-      if (this.dialogueT <= 0) this.el.dialogue.textContent = '';
-    }
-    if (this.dmgT > 0) {
-      this.dmgT -= dt;
-      this.el.dmg.style.opacity = String(Math.max(0, this.dmgT * 1.1));
+    this.mapT -= dt;
+    if (this.mapT <= 0) {
+      this.mapT = 0.12;
+      this.drawMinimap();
     }
   }
 }

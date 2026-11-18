@@ -1,18 +1,1 @@
-[
-  {
-    "name": "01-start.jpg",
-    "query": "?shot=start&seed=1"
-  },
-  {
-    "name": "02-street.jpg",
-    "query": "?shot=street&seed=1"
-  },
-  {
-    "name": "03-drive.jpg",
-    "query": "?shot=drive&seed=1"
-  },
-  {
-    "name": "04-chase.png",
-    "query": "?shot=chase&seed=1"
-  }
-]
+[{"name":"01-start.jpg","query":"?shot=start&seed=1"},{"name":"02-street.jpg","query":"?shot=street&seed=1"},{"name":"03-drive.jpg","query":"?shot=drive&seed=1"},{"name":"04-chase.jpg","query":"?shot=chase&seed=1"}]

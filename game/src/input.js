@@ -1,58 +1,68 @@
-// SUNPORT v2 — one input path for keyboard, mouse and touch. Touch
-// buttons and the joystick write the same flags the keyboard writes, so
-// the game logic never knows which device is driving.
-
+// SUNPORT v3 — one input surface for keyboard + mouse + touch.
+// Touch controls (touch.js) write into the same fields, so the game logic
+// never cares which device produced an action.
 export class Input {
-  constructor() {
+  constructor(canvas) {
+    this.canvas = canvas;
     this.keys = new Set();
-    this.pressed = new Set(); // edge-triggered, cleared by consume()
-    this.stick = { x: 0, y: 0 };
-    this.firing = false;
-    this.sprintTouch = false;
-    this.mouseDX = 0;
-    this.mouseDY = 0;
-    this.mouseDown = false;
-    this.camDragging = false; // right button held: orbit the camera
-  }
+    this.pressed = new Set(); // edge-triggered, consumed by consume()
+    this.stick = { x: 0, y: 0 }; // touch joystick, -1..1 (y negative = up)
+    this.sprintTouch = false; // touch LARI button held
+    this.firing = false; // left mouse held or touch FIRE held
+    this.camDX = 0; // accumulated mouse-drag deltas, consumed per frame
+    this.camDY = 0;
+    this.dragging = false;
+    this.dragButton = -1;
 
-  attach() {
     window.addEventListener('keydown', (e) => {
-      if (e.repeat) return;
+      if (['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.code)) e.preventDefault();
+      if (!e.repeat) this.pressed.add(e.code);
       this.keys.add(e.code);
-      this.pressed.add(e.code);
-      if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space'].includes(e.code)) e.preventDefault();
     });
     window.addEventListener('keyup', (e) => this.keys.delete(e.code));
-    window.addEventListener('blur', () => { this.keys.clear(); this.firing = false; this.camDragging = false; });
-    // Left button shoots; right button orbits the camera. They used to
-    // share the left button, so dragging the camera also fired the gun.
-    window.addEventListener('mousedown', (e) => {
-      if (e.button === 0) { this.mouseDown = true; this.firing = true; }
-      if (e.button === 2) { this.camDragging = true; }
+    window.addEventListener('blur', () => {
+      this.keys.clear();
+      this.firing = false;
+      this.dragging = false;
     });
-    window.addEventListener('mouseup', (e) => {
-      if (e.button === 0) { this.mouseDown = false; this.firing = false; }
-      if (e.button === 2) { this.camDragging = false; }
+
+    canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+    canvas.addEventListener('pointerdown', (e) => {
+      if (e.pointerType === 'touch') return; // touch is handled by touch.js
+      if (e.button === 2) {
+        this.dragging = true;
+        this.dragButton = 2;
+      } else if (e.button === 0) {
+        this.firing = true;
+      }
     });
-    window.addEventListener('mousemove', (e) => {
-      if (this.camDragging) { this.mouseDX += e.movementX || 0; this.mouseDY += e.movementY || 0; }
+    canvas.addEventListener('pointermove', (e) => {
+      if (!this.dragging || e.pointerType === 'touch') return;
+      this.camDX += e.movementX || 0;
+      this.camDY += e.movementY || 0;
     });
-    window.addEventListener('contextmenu', (e) => e.preventDefault());
+    const stopDrag = (e) => {
+      if (e.button === 2) this.dragging = false;
+      if (e.button === 0) this.firing = false;
+    };
+    canvas.addEventListener('pointerup', stopDrag);
+    canvas.addEventListener('pointercancel', stopDrag);
+    canvas.addEventListener('pointerleave', () => {
+      this.dragging = false;
+    });
   }
 
-  isDown(code) {
+  down(code) {
     return this.keys.has(code);
   }
 
-  // Edge-triggered read: true once per physical press.
+  // True once per physical press.
   consume(code) {
-    if (this.pressed.has(code)) { this.pressed.delete(code); return true; }
+    if (this.pressed.has(code)) {
+      this.pressed.delete(code);
+      return true;
+    }
     return false;
-  }
-
-  // Queue an edge-triggered action from a touch button (same as a key).
-  queue(code) {
-    this.pressed.add(code);
   }
 
   clearPressed() {
@@ -63,9 +73,9 @@ export class Input {
     return this.keys.has('ShiftLeft') || this.keys.has('ShiftRight') || this.sprintTouch;
   }
 
-  // Movement vector in world space, from WASD/arrows or the stick,
-  // relative to the camera yaw. y is forward (away from the camera).
-  moveAxis(camYaw) {
+  // Movement axes in camera space: x = strafe right, y = forward.
+  // Keyboard (WASD/arrows) and the touch stick share this.
+  axes() {
     let x = 0;
     let y = 0;
     if (this.keys.has('KeyW') || this.keys.has('ArrowUp')) y += 1;
@@ -73,22 +83,20 @@ export class Input {
     if (this.keys.has('KeyA') || this.keys.has('ArrowLeft')) x -= 1;
     if (this.keys.has('KeyD') || this.keys.has('ArrowRight')) x += 1;
     x += this.stick.x;
-    y += -this.stick.y;
+    y += -this.stick.y; // stick up (negative y) means forward
     const len = Math.hypot(x, y);
-    if (len > 1) { x /= len; y /= len; }
-    // Rotate by camera yaw. The camera sits at player + (sin, cos) * dist,
-    // so forward (W, away from the camera) is (-sin, -cos) and right (D)
-    // is (cos, -sin).
-    const sin = Math.sin(camYaw);
-    const cos = Math.cos(camYaw);
-    return { x: x * cos - y * sin, z: -x * sin - y * cos, mag: Math.min(1, len) };
+    if (len > 1) {
+      x /= len;
+      y /= len;
+    }
+    return { x, y };
   }
 
-  // Camera deltas accumulated since last read (mouse drag / touch drag).
-  takeMouseDelta() {
-    const d = { x: this.mouseDX, y: this.mouseDY };
-    this.mouseDX = 0;
-    this.mouseDY = 0;
+  // Camera deltas since the last frame; calling this zeroes them.
+  takeCamDelta() {
+    const d = { x: this.camDX, y: this.camDY };
+    this.camDX = 0;
+    this.camDY = 0;
     return d;
   }
 }

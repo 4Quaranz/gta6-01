@@ -1,452 +1,198 @@
-// SUNPORT v2 — the player avatar: Jace Moreno. A low-poly figure built
-// from boxes with real limb pivots, so walking, running and punching are
-// visibly animated — arms and legs swing, the body leans into a sprint,
-// and a punch is a full arm swing with a torso twist, not a frozen pose.
-
+// SUNPORT v3 — Jace Moreno on foot: walk / sprint + stamina, jump, punch
+// animation, entering and leaving cars. Written fresh.
 import * as THREE from 'three';
-import { SPEEDS, STAMINA, angleLerp, clamp } from './config.js';
-import { collideCircle, clampToLand } from './city.js';
+import { PLAYER, WANTED, SPOTS } from './config.js';
+import { makePersonFigure } from './pedestrians.js';
 
-// ---------------------------------------------------------------------------
-// Faces. Every character gets eyes, a nose and a mouth — drawn on a canvas
-// texture for the front of the head, plus a small 3D nose bump. The texture
-// is bright (white eyes, dark pupils, clear mouth line) so the face still
-// reads at dusk and at night, and each variant looks different: Jace's
-// steady look, a smile, narrow eyes, glasses, sunglasses, a mustache,
-// Lena's lashes and lips, and a sleepy face. One texture per skin tone +
-// variant, cached and shared by every character who wears it.
-// ---------------------------------------------------------------------------
-
-function hexCss(hex) {
-  return `#${hex.toString(16).padStart(6, '0')}`;
-}
-
-const faceTexCache = new Map();
-
-function faceTexture(skinHex, variant) {
-  const key = `${skinHex}|${variant}`;
-  if (faceTexCache.has(key)) return faceTexCache.get(key);
-  const c = document.createElement('canvas');
-  c.width = 128;
-  c.height = 128;
-  const g = c.getContext('2d');
-  g.fillStyle = hexCss(skinHex);
-  g.fillRect(0, 0, 128, 128);
-  // Soft shading at the edges so the face is not flat.
-  const edge = g.createRadialGradient(64, 64, 40, 64, 64, 95);
-  edge.addColorStop(0, 'rgba(0,0,0,0)');
-  edge.addColorStop(1, 'rgba(0,0,0,0.14)');
-  g.fillStyle = edge;
-  g.fillRect(0, 0, 128, 128);
-
-  const eyeY = 50;
-  const eyeDX = 26;
-  const eyeW = variant === 2 ? 15 : 22;
-  const eyeH = variant === 7 ? 6 : 12;
-  const eyeColor = variant === 0 ? '#2a1a10' : '#1a1a1a';
-  for (const sx of [-1, 1]) {
-    const ex = 64 + sx * eyeDX;
-    if (variant !== 4) {
-      // White of the eye, then the pupil.
-      g.fillStyle = '#ffffff';
-      g.beginPath();
-      g.ellipse(ex, eyeY, eyeW / 2, eyeH / 2, 0, 0, Math.PI * 2);
-      g.fill();
-      g.fillStyle = eyeColor;
-      g.beginPath();
-      g.arc(ex, eyeY, 4.5, 0, Math.PI * 2);
-      g.fill();
-      g.fillStyle = '#ffffff';
-      g.beginPath();
-      g.arc(ex + 1.5, eyeY - 1.5, 1.4, 0, Math.PI * 2);
-      g.fill();
-    }
-    // Eyebrow.
-    g.strokeStyle = 'rgba(30,20,10,0.9)';
-    g.lineWidth = 3.5;
-    g.lineCap = 'round';
-    g.beginPath();
-    g.moveTo(ex - 11, eyeY - 15);
-    g.lineTo(ex + 11, eyeY - 16);
-    g.stroke();
-    // Lena's lashes.
-    if (variant === 6) {
-      g.strokeStyle = '#1a1a1a';
-      g.lineWidth = 2;
-      for (let k = -1; k <= 1; k++) {
-        g.beginPath();
-        g.moveTo(ex + k * 6, eyeY - eyeH / 2 - 1);
-        g.lineTo(ex + k * 7, eyeY - eyeH / 2 - 6);
-        g.stroke();
-      }
-    }
-  }
-  // Sunglasses: one dark band across both eyes (drawn over them).
-  if (variant === 4) {
-    g.fillStyle = '#101418';
-    g.beginPath();
-    g.roundRect(28, 40, 72, 20, 8);
-    g.fill();
-    g.fillStyle = 'rgba(255,255,255,0.35)';
-    g.fillRect(34, 43, 18, 4);
-    g.fillRect(76, 43, 18, 4);
-  }
-  // Round glasses: frames around the eyes + bridge.
-  if (variant === 3) {
-    g.strokeStyle = '#222831';
-    g.lineWidth = 3;
-    for (const sx of [-1, 1]) {
-      g.beginPath();
-      g.arc(64 + sx * eyeDX, eyeY, 14, 0, Math.PI * 2);
-      g.stroke();
-    }
-    g.beginPath();
-    g.moveTo(64 - eyeDX + 14, eyeY);
-    g.lineTo(64 + eyeDX - 14, eyeY);
-    g.stroke();
-  }
-  // Nose shading under the 3D nose bump.
-  g.fillStyle = 'rgba(0,0,0,0.18)';
-  g.beginPath();
-  g.ellipse(64, 78, 7, 4, 0, 0, Math.PI * 2);
-  g.fill();
-  // Mustache.
-  if (variant === 5) {
-    g.fillStyle = '#2a1a10';
-    g.beginPath();
-    g.ellipse(53, 90, 12, 5, -0.25, 0, Math.PI * 2);
-    g.fill();
-    g.beginPath();
-    g.ellipse(75, 90, 12, 5, 0.25, 0, Math.PI * 2);
-    g.fill();
-  }
-  // Mouth.
-  const mouthY = 100;
-  if (variant === 6) {
-    // Lena: red lips.
-    g.fillStyle = '#c23a4a';
-    g.beginPath();
-    g.ellipse(64, mouthY, 13, 5.5, 0, 0, Math.PI * 2);
-    g.fill();
-    g.fillStyle = '#8a2430';
-    g.beginPath();
-    g.ellipse(64, mouthY, 10, 2, 0, 0, Math.PI * 2);
-    g.fill();
-  } else if (variant === 1 || variant === 5) {
-    // Smile.
-    g.strokeStyle = '#4a2418';
-    g.lineWidth = 3;
-    g.lineCap = 'round';
-    g.beginPath();
-    g.arc(64, mouthY - 6, 12, 0.25 * Math.PI, 0.75 * Math.PI);
-    g.stroke();
-  } else {
-    // Straight mouth.
-    const w = variant === 7 ? 12 : variant === 2 ? 16 : 20;
-    g.strokeStyle = '#4a2418';
-    g.lineWidth = 3;
-    g.lineCap = 'round';
-    g.beginPath();
-    g.moveTo(64 - w / 2, mouthY);
-    g.lineTo(64 + w / 2, mouthY);
-    g.stroke();
-  }
-  // Jace: light stubble on the lower face.
-  if (variant === 0) {
-    g.fillStyle = 'rgba(0,0,0,0.07)';
-    g.fillRect(24, 92, 80, 36);
-  }
-  const tex = new THREE.CanvasTexture(c);
-  tex.colorSpace = THREE.SRGBColorSpace;
-  faceTexCache.set(key, tex);
-  return tex;
-}
-
-// One articulated figure. The same builder is used for Jace, Lena and
-// every pedestrian — only the colours and the scale change.
-export function buildAvatar(opts = {}) {
-  const skin = opts.skin ?? 0xc98e6a;
-  const shirt = opts.shirt ?? 0x2e6a8a;
-  const pants = opts.pants ?? 0x2a2f38;
-  const hair = opts.hair ?? 0x1a1a1a;
-  const shoes = 0x1c1c1c;
-  const g = new THREE.Group();
-  const skinMat = new THREE.MeshStandardMaterial({ color: skin, roughness: 0.7 });
-  const shirtMat = new THREE.MeshStandardMaterial({ color: shirt, roughness: 0.85 });
-  const pantsMat = new THREE.MeshStandardMaterial({ color: pants, roughness: 0.9 });
-  const hairMat = new THREE.MeshStandardMaterial({ color: hair, roughness: 0.95 });
-  const shoeMat = new THREE.MeshStandardMaterial({ color: shoes, roughness: 0.9 });
-
-  function part(w, h, d, x, y, z, mat) {
-    const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
-    m.position.set(x, y, z);
-    m.castShadow = true;
-    return m;
-  }
-
-  // Legs pivot at the hip (y = 0.95).
-  const legL = new THREE.Group();
-  legL.position.set(-0.14, 0.95, 0);
-  legL.add(part(0.2, 0.9, 0.22, 0, -0.45, 0, pantsMat));
-  legL.add(part(0.22, 0.14, 0.34, 0, -0.88, 0.05, shoeMat));
-  g.add(legL);
-  const legR = new THREE.Group();
-  legR.position.set(0.14, 0.95, 0);
-  legR.add(part(0.2, 0.9, 0.22, 0, -0.45, 0, pantsMat));
-  legR.add(part(0.22, 0.14, 0.34, 0, -0.88, 0.05, shoeMat));
-  g.add(legR);
-
-  // Torso.
-  const torso = new THREE.Group();
-  torso.position.set(0, 0.95, 0);
-  torso.add(part(0.62, 0.72, 0.34, 0, 0.36, 0, shirtMat));
-  // Jacket stripe for readability at a distance.
-  torso.add(part(0.64, 0.1, 0.36, 0, 0.55, 0, new THREE.MeshStandardMaterial({ color: 0xffd24a, roughness: 0.8 })));
-  g.add(torso);
-
-  // Head + hair. The head box wears the face texture on its front (+z)
-  // face, and a small 3D nose bump sits on top of it.
-  const head = new THREE.Group();
-  head.position.set(0, 1.78, 0);
-  const faceTex = faceTexture(skin, opts.face ?? 0);
-  const faceMat = new THREE.MeshStandardMaterial({
-    map: faceTex, roughness: 0.7,
-    emissive: 0xffffff, emissiveMap: faceTex, emissiveIntensity: 0.18,
-  });
-  const headMesh = new THREE.Mesh(
-    new THREE.BoxGeometry(0.34, 0.34, 0.32),
-    [skinMat, skinMat, skinMat, skinMat, faceMat, skinMat],
-  );
-  headMesh.position.set(0, 0.12, 0);
-  headMesh.castShadow = true;
-  head.add(headMesh);
-  const nose = new THREE.Mesh(
-    new THREE.BoxGeometry(0.07, 0.1, 0.06),
-    new THREE.MeshStandardMaterial({ color: new THREE.Color(skin).multiplyScalar(0.82), roughness: 0.7 }),
-  );
-  nose.position.set(0, 0.1, 0.18);
-  nose.castShadow = true;
-  head.add(nose);
-  head.add(part(0.36, 0.12, 0.34, 0, 0.32, 0, hairMat));
-  head.add(part(0.36, 0.2, 0.1, 0, 0.22, -0.12, hairMat));
-  g.add(head);
-
-  // Arms pivot at the shoulder (y = 1.68).
-  const armL = new THREE.Group();
-  armL.position.set(-0.4, 1.68, 0);
-  armL.add(part(0.18, 0.72, 0.2, 0, -0.36, 0, shirtMat));
-  armL.add(part(0.16, 0.16, 0.18, 0, -0.76, 0, skinMat));
-  g.add(armL);
-  const armR = new THREE.Group();
-  armR.position.set(0.4, 1.68, 0);
-  armR.add(part(0.18, 0.72, 0.2, 0, -0.36, 0, shirtMat));
-  armR.add(part(0.16, 0.16, 0.18, 0, -0.76, 0, skinMat));
-  g.add(armR);
-
-  return { group: g, legL, legR, armL, armR, torso, head };
-}
-
-// Pose a figure's limbs for a walk/run cycle. phase advances with speed;
-// amp grows when running. Call every frame for every moving figure.
-export function poseWalk(figure, phase, amp, lean) {
-  const s = Math.sin(phase);
-  const c = Math.sin(phase + Math.PI);
-  figure.legL.rotation.x = s * amp;
-  figure.legR.rotation.x = c * amp;
-  figure.armL.rotation.x = c * amp * 0.8;
-  figure.armR.rotation.x = s * amp * 0.8;
-  figure.torso.rotation.x = lean;
-  figure.torso.position.y = 0.95 + Math.abs(Math.cos(phase)) * 0.04 * amp;
-}
-
-// Pose a punch: phase 0..1 across the punch. The punching arm snaps
-// forward with a windup, the torso twists and leans in.
-export function posePunch(figure, phase) {
-  const swing = Math.sin(Math.min(1, phase * 1.4) * Math.PI * 0.5);
-  const recover = phase > 0.55 ? (phase - 0.55) / 0.45 : 0;
-  const ext = swing * (1 - recover * 0.7);
-  figure.armR.rotation.x = -0.3 - 1.35 * ext;
-  figure.armR.rotation.z = -0.15 * ext;
-  figure.armL.rotation.x = 0.55 * ext;
-  figure.armL.rotation.z = 0.3 * ext;
-  figure.torso.rotation.x = 0.16 * ext;
-  figure.torso.rotation.y = -0.28 * ext;
-  figure.head.rotation.y = -0.12 * ext;
-}
+const PUNCH_DUR = 0.6; // seconds; arm reaches -1.17 rad mid-swing
+const GRAVITY = 24; // jump lands in ~0.62 s (jumpSpeed 7.4)
 
 export class Player {
-  constructor(scene) {
-    this.figure = buildAvatar({ shirt: 0x2e6a8a, pants: 0x2a2f38, skin: 0xc98e6a, hair: 0x1a1a1a, face: 0 });
-    this.group = this.figure.group;
-    scene.add(this.group);
-    this.x = 190;
-    this.z = 32;
-    this.yaw = -Math.PI / 2;
-    this.camYaw = -Math.PI / 2;
+  constructor(G) {
+    this.G = G;
+    this.figure = makePersonFigure({
+      skin: 0xe8b98a,
+      shirt: 0x1f3a5f, // dark blue jacket
+      pants: 0x2c3e50,
+      hairColor: 0x1a1a1a,
+      faceVariant: 0,
+      hairLong: false,
+    });
+    G.scene.add(this.figure.group);
+    this.x = SPOTS.spawn.x;
+    this.z = SPOTS.spawn.z;
+    this.yaw = 0; // facing +z (south, down the boulevard)
+    this.camYaw = 0;
     this.camPitch = 0.32;
+    this.speed = 0;
+    this.stamina = PLAYER.staminaMax;
+    this.money = 120;
+    this.health = 100;
     this.onFoot = true;
     this.car = null;
-    this.health = 100;
-    this.money = 120;
     this.weapon = 'fists';
+    this.hasPistol = false;
     this.mag = 12;
     this.reserve = 24;
-    this.hasPistol = false;
-    this.stamina = STAMINA.max;
-    this.sprinting = false;
-    this.punchT = 0; // counts down from COMBAT.punchTime while punching
-    this.punchDidHit = false;
+    this.punchT = 0;
+    this.jumpT = 0;
+    this.jumpY = 0;
     this.walkPhase = 0;
-    this.speed = 0;
-    this.staggerT = 0;
-    this.vy = 0; // jump vertical speed
-    this.jumpY = 0; // height above the ground while jumping
+    this.reloadT = 0;
+    this.sprinting = false;
+    this.syncFigure();
   }
 
-  reset(x, z, yaw) {
-    this.x = x;
-    this.z = z;
-    this.yaw = yaw;
-    this.camYaw = yaw;
-    this.onFoot = true;
-    this.car = null;
-    this.health = 100;
-    this.stamina = STAMINA.max;
-    this.punchT = 0;
-    this.vy = 0;
-    this.jumpY = 0;
-    this.group.visible = true;
+  syncFigure() {
+    this.figure.group.position.set(this.x, this.jumpY, this.z);
+    this.figure.group.rotation.y = this.yaw;
+    this.figure.group.visible = this.onFoot;
   }
 
   startPunch() {
-    if (this.punchT > 0 || !this.onFoot) return false;
-    this.punchT = 0.45;
-    this.punchDidHit = false;
+    if (!this.onFoot || this.punchT > 0) return false;
+    this.punchT = PUNCH_DUR;
     return true;
   }
 
-  get punchPhase() {
-    return this.punchT > 0 ? 1 - this.punchT / 0.45 : -1;
+  startJump() {
+    if (!this.onFoot || this.jumpT > 0) return false;
+    this.jumpT = 0.0001;
+    return true;
   }
 
   enterCar(car) {
     this.onFoot = false;
     this.car = car;
-    this.group.visible = false;
-    this.punchT = 0;
+    car.parked = false;
+    car.speed = 0;
+    this.speed = 0;
+    this.syncFigure();
   }
 
   exitCar() {
     if (!this.car) return;
-    const c = this.car;
+    const car = this.car;
+    // Step out on the driver's side.
+    const sideX = Math.cos(car.yaw);
+    const sideZ = -Math.sin(car.yaw);
+    this.x = car.x + sideX * 2.2;
+    this.z = car.z + sideZ * 2.2;
+    const fixed = this.G.city.resolveCircle(this.x, this.z, PLAYER.radius);
+    this.x = fixed.x;
+    this.z = fixed.z;
+    this.yaw = car.yaw;
     this.car = null;
     this.onFoot = true;
-    this.group.visible = true;
-    // Step out on the driver's side.
-    this.x = c.x - Math.cos(c.yaw) * 2.2;
-    this.z = c.z + Math.sin(c.yaw) * 2.2;
-    this.yaw = c.yaw;
-    this.vy = 0;
-    this.jumpY = 0;
+    this.speed = 0;
+    this.syncFigure();
   }
 
-  takeDamage(n) {
-    this.health = Math.max(0, this.health - n);
-    this.staggerT = 0.35;
-  }
+  update(dt, input) {
+    // Camera orbit (mouse right-drag / touch drag share these deltas).
+    const d = input.takeCamDelta();
+    this.camYaw -= d.x * 0.004;
+    this.camPitch = THREE.MathUtils.clamp(this.camPitch + d.y * 0.003, -0.12, 0.62);
 
-  update(dt, input, ctx) {
-    // Camera orbit from mouse / touch drag — works on foot and in a car.
-    const md = input.takeMouseDelta();
-    if (md.x !== 0 || md.y !== 0) {
-      this.camYaw += md.x * 0.0045;
-      this.camPitch = clamp(this.camPitch + md.y * 0.003, 0.05, 1.1);
-    }
-    // In a car the avatar rides along; the car drives itself.
     if (!this.onFoot) {
-      // Drain jump presses: Space is the handbrake while driving, and a
-      // stale press must not turn into a jump the moment the player exits.
-      input.consume('Space');
-      if (this.car) { this.x = this.car.x; this.z = this.car.z; this.yaw = this.car.yaw; }
-      this.group.position.set(this.x, 0, this.z);
-      this.group.rotation.y = this.yaw;
+      // Driving: position mirrors the car; the figure is hidden.
+      if (this.car) {
+        this.x = this.car.x;
+        this.z = this.car.z;
+        this.yaw = this.car.yaw;
+        this.speed = Math.abs(this.car.speed);
+      }
+      this.syncFigure();
       return;
     }
-    // Jump: Space, edge-triggered, only from the ground. ~1.2 m high.
-    if (input.consume('Space') && this.jumpY <= 0) this.vy = 7.2;
-    if (this.jumpY > 0 || this.vy > 0) {
-      this.vy -= 22 * dt;
-      this.jumpY = Math.max(0, this.jumpY + this.vy * dt);
-      if (this.jumpY === 0) this.vy = 0;
-    }
-    const axis = input.moveAxis(this.camYaw);
-    const moving = axis.mag > 0.08;
-    // Sprint: Shift or the LARI button, while there is stamina to spend.
-    const wantSprint = input.sprint && (this.sprinting || this.stamina > STAMINA.minToSprint);
-    this.sprinting = wantSprint && moving;
-    if (this.sprinting) {
-      this.stamina = Math.max(0, this.stamina - STAMINA.drain * dt);
-      if (this.stamina <= 0) this.sprinting = false;
+
+    const ax = input.axes();
+    // Input axes: y = +1 forward (W / stick up), x = +1 strafe right (D).
+    const fwd = ax.y;
+    const strafe = ax.x;
+    const moving = Math.hypot(ax.x, ax.y) > 0.08;
+    const wantSprint = input.sprint && moving && fwd > 0.1 && this.stamina > 1;
+    this.sprinting = wantSprint;
+    const target = wantSprint ? PLAYER.run : PLAYER.walk;
+    const targetSpeed = moving ? target * Math.min(1, Math.hypot(ax.x, ax.y)) : 0;
+    const rate = targetSpeed > this.speed ? PLAYER.accel : PLAYER.accel * 1.4;
+    this.speed += THREE.MathUtils.clamp(targetSpeed - this.speed, -rate * dt, rate * dt);
+    if (wantSprint) {
+      this.stamina = Math.max(0, this.stamina - PLAYER.staminaDrain * dt);
     } else {
-      this.stamina = Math.min(STAMINA.max, this.stamina + STAMINA.regen * dt);
+      this.stamina = Math.min(PLAYER.staminaMax, this.stamina + PLAYER.staminaRegen * dt);
     }
-    const speed = this.sprinting ? SPEEDS.sprint : SPEEDS.walk;
-    let nx = this.x;
-    let nz = this.z;
-    if (moving) {
-      nx += axis.x * speed * axis.mag * dt;
-      nz += axis.z * speed * axis.mag * dt;
-      const targetYaw = Math.atan2(axis.x, axis.z);
-      this.yaw = angleLerp(this.yaw, targetYaw, Math.min(1, dt * 10));
-      this.speed = speed * axis.mag;
-      this.walkPhase += dt * speed * 2.1 * axis.mag;
-    } else {
-      this.speed = 0;
-      this.walkPhase += dt * 1.2;
+
+    if (moving && this.speed > 0.2) {
+      // Camera-relative movement.
+      const fwdX = Math.sin(this.camYaw);
+      const fwdZ = Math.cos(this.camYaw);
+      const rightX = Math.cos(this.camYaw);
+      const rightZ = -Math.sin(this.camYaw);
+      const mx = (fwdX * fwd + rightX * strafe) * this.speed * dt;
+      const mz = (fwdZ * fwd + rightZ * strafe) * this.speed * dt;
+      const nx = this.x + mx;
+      const nz = this.z + mz;
+      const fixed = this.G.city.resolveCircle(nx, nz, PLAYER.radius);
+      this.x = fixed.x;
+      this.z = fixed.z;
+      const targetYaw = Math.atan2(mx, mz);
+      let dy = targetYaw - this.yaw;
+      while (dy > Math.PI) dy -= Math.PI * 2;
+      while (dy < -Math.PI) dy += Math.PI * 2;
+      this.yaw += THREE.MathUtils.clamp(dy, -8 * dt, 8 * dt);
     }
-    // Collisions: buildings, then the shoreline.
-    const fixed = collideCircle(nx, nz, 0.6, ctx.colliders);
-    const land = clampToLand(fixed.x, fixed.z);
-    this.x = land.x;
-    this.z = land.z;
-    // Punch timer.
-    if (this.punchT > 0) this.punchT = Math.max(0, this.punchT - dt);
-    if (this.staggerT > 0) this.staggerT = Math.max(0, this.staggerT - dt);
-    // Pose: punch overrides the walk cycle while it runs.
+
+    // Jump (tuck pose while airborne).
+    if (this.jumpT > 0) {
+      this.jumpT += dt;
+      this.jumpY = Math.max(0, PLAYER.jumpSpeed * this.jumpT - 0.5 * GRAVITY * this.jumpT * this.jumpT);
+      if (this.jumpT >= (2 * PLAYER.jumpSpeed) / GRAVITY) {
+        this.jumpT = 0;
+        this.jumpY = 0;
+      }
+    }
+
+    // Punch animation: arm swings to -1.17 rad, torso twists, body lunges.
+    if (this.punchT > 0) {
+      this.punchT = Math.max(0, this.punchT - dt);
+    }
+    const punchK = this.punchT > 0 ? 1 - this.punchT / PUNCH_DUR : 0;
+    const punchSwing = this.punchT > 0 ? Math.sin(Math.PI * Math.min(1, punchK * 1.15)) : 0;
+
+    // Walk / run limb swing (overridden by the punch on the right arm).
+    this.walkPhase += this.speed * dt * 2.1;
+    const swing = this.speed > 0.2 ? Math.min(0.75, this.speed * 0.09) : 0;
+    const s = Math.sin(this.walkPhase);
     const f = this.figure;
-    if (this.jumpY > 0) {
-      // Airborne: tuck the legs, arms out for balance.
-      f.legL.rotation.x = 0.6;
-      f.legR.rotation.x = -0.4;
-      f.armL.rotation.z = 0.5;
-      f.armR.rotation.z = -0.5;
-      f.armL.rotation.x = -0.3;
-      f.armR.rotation.x = -0.3;
-      f.torso.rotation.x = 0.08;
-    } else if (this.punchT > 0) {
-      posePunch(f, this.punchPhase);
-      f.legL.rotation.x = Math.sin(this.walkPhase) * 0.25;
-      f.legR.rotation.x = -Math.sin(this.walkPhase) * 0.25;
-    } else if (moving) {
-      const amp = this.sprinting ? 0.95 : 0.65;
-      poseWalk(f, this.walkPhase, amp, this.sprinting ? 0.14 : 0.05);
+    if (this.jumpT > 0) {
+      f.legL.rotation.x = -0.9;
+      f.legR.rotation.x = -0.5;
+      f.armL.rotation.x = -0.7;
+      f.armR.rotation.x = -0.7;
     } else {
-      // Idle: breathe, arms hang loose.
-      const b = Math.sin(performance.now() * 0.0016) * 0.02;
-      f.legL.rotation.x = 0;
-      f.legR.rotation.x = 0;
-      f.armL.rotation.x = b;
-      f.armR.rotation.x = -b;
-      f.armL.rotation.z = 0.06;
-      f.armR.rotation.z = -0.06;
-      f.torso.rotation.x = 0;
-      f.torso.rotation.y = 0;
-      f.torso.position.y = 0.95 + b * 0.5;
-      f.head.rotation.y = 0;
+      f.legL.rotation.x = s * swing;
+      f.legR.rotation.x = -s * swing;
+      f.armL.rotation.x = -s * swing * 0.85;
+      f.armR.rotation.x = s * swing * 0.85;
     }
-    // Stagger flinch.
-    if (this.staggerT > 0) f.torso.rotation.x -= 0.25 * (this.staggerT / 0.35);
-    this.group.position.set(this.x, this.jumpY, this.z);
-    this.group.rotation.y = this.yaw;
+    if (this.punchT > 0) {
+      f.armR.rotation.x = -1.17 * punchSwing;
+      f.torso.rotation.x = 0.18 * punchSwing;
+      // Small lunge forward during the swing.
+      const lx = Math.sin(this.yaw) * 0.35 * punchSwing * dt * 8;
+      const lz = Math.cos(this.yaw) * 0.35 * punchSwing * dt * 8;
+      const fixed = this.G.city.resolveCircle(this.x + lx, this.z + lz, PLAYER.radius);
+      this.x = fixed.x;
+      this.z = fixed.z;
+    } else {
+      f.torso.rotation.x = 0;
+    }
+    // Idle breathing when standing still.
+    if (this.speed < 0.2 && this.punchT <= 0 && this.jumpT <= 0) {
+      f.armL.rotation.x = Math.sin(this.G.state.time * 1.8) * 0.04;
+      f.armR.rotation.x = Math.sin(this.G.state.time * 1.8) * 0.04;
+    }
+    this.syncFigure();
   }
 }
